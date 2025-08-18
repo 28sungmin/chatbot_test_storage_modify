@@ -21,58 +21,50 @@ APP_ORIGIN    = "https://test-lydus-chatbot.streamlit.app"   # 이 Streamlit 앱
 PARENT_ORIGIN = "http://127.0.0.1:5500/index.html"     # 부모 페이지 origin
 # -----------------------------------
 
-cookies = EncryptedCookieManager(prefix="lydus_", password=st.secrets.get("COOKIE_PASSWORD","dev-pass"))
+
+cookies = EncryptedCookieManager(prefix="lydus_", password=st.secrets.get("COOKIE_PASSWORD", "dev-pass"))
 if not cookies.ready():
     st.stop()
 
-# (A) 기존 anon-* 값이 남아 있으면 1회 정리
-old = cookies.get("loginid")
-print(old)
-if old and str(old).startswith("anon-"):
-    del cookies["loginid"]
-    cookies.save()
-
-# (B) JS: 부모창에 loginid 요청 -> 응답 받으면 1회성 쿼리로 전달
+# 1) 부모에게 loginid 요청 → 응답 받으면 쿼리에 1회 실어서 리로드
 components.html(f"""
 <script>
 (function(){{
-  // 자식(이 탭) -> 부모에게 요청 : targetOrigin은 '부모'!
+  console.log("[child] opener?", !!window.opener);
   if (window.opener) {{
+    console.log("[child] request loginid to parent:", "{PARENT_ORIGIN}");
     window.opener.postMessage("REQUEST_LOGINID", "{PARENT_ORIGIN}");
   }}
-  // 부모의 응답 수신 : e.origin은 '부모'!
   window.addEventListener("message", function(e){{
+    console.log("[child] got message:", e.origin, e.data);
     if (e.origin !== "{PARENT_ORIGIN}") return;
     var data = e.data || {{}};
     if (!data.loginid) return;
-
-    // 1회성으로 URL 쿼리에 싣고 리로드 (서버 파이썬이 ECM에 저장하도록)
     var u = new URL(window.location.href);
     u.searchParams.set("li", data.loginid);
+    console.log("[child] reloading with li param:", data.loginid);
     window.location.replace(u.toString());
   }});
 }})();
 </script>
 """, height=0)
 
-# (C) 쿼리 수신 시 ECM에 저장하고 URL 정리
+# 2) 쿼리로 들어온 li → ECM에 저장 → URL 정리 + rerun
 qp = st.query_params
 if "li" in qp:
     new_id = qp["li"]
     cookies["loginid"] = new_id
     cookies.save()
-    # 세션에도 즉시 반영
     st.session_state["loginid"] = new_id
-    # URL 쿼리 제거
     st.query_params.clear()
+    st.rerun()
 
-# (D) 최종 사용: 안전 접근 (KeyError 방지)
+# 3) 최종 확인
 loginid = st.session_state.get("loginid") or cookies.get("loginid")
 if loginid:
-    st.session_state["loginid"] = loginid   # 세션에 고정
     st.success(f"로그인 아이디: {loginid}")
 else:
-    st.info("로그인 아이디 수신 중입니다. 팝업 허용 및 도메인 설정을 확인하세요.")
+    st.info("로그인 아이디 수신 대기 중입니다. (부모 페이지에서 열었는지/팝업 허용/ORIGIN 확인)")
 
 #===================================================================================
 # 설정
