@@ -43,7 +43,6 @@ if "loginid" not in st.session_state:
     if "loginid" in qp:
         st.session_state["loginid"] = qp["loginid"]
         st.query_params.clear()
-        st.rerun()
 
 loginid = st.session_state.get("loginid")
 if not loginid:
