@@ -48,7 +48,7 @@ r = redis.Redis(
 )
 STOPWORDS = ["알려", "수", "있어", "어디", "나오", "는지", "에서", "으로", "하고", "가이드라인", '확인', '확인하고', '싶어', '페이지', '어느', '부분']
 TOKEN_LIMIT = 50 # 하루 한 사람당 1000원 -> 260000토큰?
-USER_ID = loginid
+USER_ID = uid
 
 # 1권
 IDX_FILE_1        = "data/book1_faiss_chunk_250804.index"
