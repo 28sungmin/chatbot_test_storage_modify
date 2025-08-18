@@ -9,6 +9,9 @@ import re
 from numpy.linalg import norm
 import redis
 
+import streamlit.components.v1 as components
+from streamlit_cookies_manager import EncryptedCookieManager
+
 #===================================================================================
 # 쿠키 관리(로그인 관련)
 #===================================================================================
