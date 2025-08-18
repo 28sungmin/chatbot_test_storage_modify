@@ -20,12 +20,17 @@ APP_ORIGIN    = "https://test-lydus-chatbot.streamlit.app"   # 이 Streamlit 앱
 PARENT_ORIGIN = "http://127.0.0.1:5500/index.html"     # 부모 페이지 origin
 # -----------------------------------
 
-# window.name에서 loginid를 꺼내 URL 쿼리(li)로 1회 주입 → 파이썬이 받아 쿠키/세션에 저장 → URL 정리
+import streamlit as st
+import streamlit.components.v1 as components
+
+# 1) (초기) window.name 안에 있던 loginid를 1회성 쿼리(li)로 붙여 리로드
+#    → 파이썬이 읽어서 session_state에 저장하고, URL은 즉시 정리
 if "loginid" not in st.session_state:
     components.html("""
     <script>
     (function(){
       try {
+        console.log(loginid);
         if (window.name) {
           var payload = null;
           try { payload = JSON.parse(window.name); } catch(e){}
@@ -54,6 +59,7 @@ if uid:
     st.success(f"로그인 아이디: {uid}")
 else:
     st.info("부모 HTML 페이지에서 버튼으로 열어주세요.")
+
 #===================================================================================
 # 설정
 #===================================================================================
@@ -79,7 +85,7 @@ r = redis.Redis(
 )
 STOPWORDS = ["알려", "수", "있어", "어디", "나오", "는지", "에서", "으로", "하고", "가이드라인", '확인', '확인하고', '싶어', '페이지', '어느', '부분']
 TOKEN_LIMIT = 50 # 하루 한 사람당 1000원 -> 260000토큰?
-USER_ID = st.session_state["loginid"]
+USER_ID = uid
 
 # 1권
 IDX_FILE_1        = "data/book1_faiss_chunk_250804.index"
