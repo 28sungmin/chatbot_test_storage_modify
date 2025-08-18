@@ -20,45 +20,49 @@ APP_ORIGIN    = "https://test-lydus-chatbot.streamlit.app"   # 이 Streamlit 앱
 PARENT_ORIGIN = "http://127.0.0.1:5500/index.html"     # 부모 페이지 origin
 # -----------------------------------
 
-import streamlit as st
-import streamlit.components.v1 as components
+# 1) top.window.name 에서 loginid를 꺼내 1회성 쿼리로 싣고 리로드
+components.html("""
+<script>
+(function(){
+  try {
+    // 탭(최상위 윈도우)의 name을 우선 확인
+    var nameText = (window.top && window.top.name) ? window.top.name : window.name;
+    if (!nameText) return;
 
-# 1) (초기) window.name 안에 있던 loginid를 1회성 쿼리(li)로 붙여 리로드
-#    → 파이썬이 읽어서 session_state에 저장하고, URL은 즉시 정리
-if "loginid" not in st.session_state:
-    components.html("""
-    <script>
-    (function(){
-      console.log(loginid);
-      try {
-        if (window.name) {
-          var payload = null;
-          try { payload = JSON.parse(window.name); } catch(e){}
-          if (payload && payload.loginid) {
-            var u = new URL(window.location.href);
-            u.searchParams.set("li", payload.loginid); // 1회성 전달
-            window.name = ""; // 민감정보 잔류 방지
-            window.location.replace(u.toString()); // 쿼리 포함 주소로 리로드
-          }
-        }
-      } catch(e) { console.log("[child] window.name parse error", e); }
-    })();
-    </script>
-    """, height=0)
+    var payload = null;
+    try { payload = JSON.parse(nameText); } catch(e) {}
 
-# 2) 쿼리로 들어온 li → 세션에 저장 → URL에서 즉시 제거 → 깔끔히 재실행
+    if (payload && payload.loginid) {
+      // 1회성으로 쿼리 파라미터에 싣기
+      var u = new URL(window.top.location.href);
+      u.searchParams.set("loginid", payload.loginid);
+
+      // 민감정보가 더 남지 않도록 즉시 name 초기화
+      window.top.name = "";
+
+      // 깔끔히 리로드 (파이썬이 이 쿼리를 받아 세션에 저장)
+      window.top.location.replace(u.toString());
+    }
+  } catch(err) {
+    console.log("[child] window.name parse error", err);
+  }
+})();
+</script>
+""", height=0)
+
+# 2) 쿼리 → 세션에 저장 → URL 정리 → rerun
 qp = st.query_params
-if "li" in qp:
-    st.session_state["loginid"] = qp["li"]
-    st.query_params.clear()   # 주소창에서 ?li= 제거
-    st.rerun()                # 깨끗한 URL로 재실행
+if "loginid" in qp:
+    st.session_state["loginid"] = qp["loginid"]
+    st.query_params.clear()
+    st.rerun()
 
-# 3) 최종 표시
+# 3) 이후 안전하게 사용
 uid = st.session_state.get("loginid")
 if uid:
     st.success(f"로그인 아이디: {uid}")
 else:
-    st.info("부모 HTML 페이지에서 버튼으로 열어주세요.")
+    st.info("부모 HTML에서 버튼으로 열어주세요.")
 
 #===================================================================================
 # 설정
