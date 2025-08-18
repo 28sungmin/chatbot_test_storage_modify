@@ -12,44 +12,17 @@ import redis
 #===================================================================================
 # 쿠키 관리(로그인 관련)
 #===================================================================================
-import streamlit.components.v1 as components
-
-# iframe → window.name → 쿼리 전달
-components.html("""
-<script>
-(function(){
-  try {
-    var payload = null;
-    if (window.name) {
-      try { payload = JSON.parse(window.name); } catch (e) {}
-    }
-
-    if (payload && payload.loginid) {
-      const u = new URL(window.location.href);
-      u.searchParams.set("loginid", payload.loginid);
-      window.name = "";  // 1회성으로 사용 후 초기화
-      window.location.replace(u.toString());
-    }
-  } catch (err) {
-    console.log("[iframe] loginid 전달 실패", err);
-  }
-})();
-""", height=0)
-
-# 세션에 loginid 저장
 qp = st.query_params
 
-if "loginid" not in st.session_state:
-    if "loginid" in qp:
-        st.session_state["loginid"] = qp["loginid"]
-        st.query_params.clear()
+if "loginid" in qp and "loginid" not in st.session_state:
+    st.session_state["loginid"] = qp["loginid"]
+    st.query_params.clear()  # URL 정리 (iframe 내부 URL만 바뀜)
 
-loginid = st.session_state.get("loginid")
-if not loginid:
-    st.warning("로그인 아이디가 없습니다.")
-    st.stop()
-
-st.success(f"로그인 ID: {loginid}")
+uid = st.session_state.get("loginid")
+if uid:
+    st.success(f"로그인 아이디: {uid}")
+else:
+    st.warning("로그인 아이디 없음")
 #===================================================================================
 # 설정
 #===================================================================================
