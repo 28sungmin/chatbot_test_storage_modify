@@ -1,0 +1,662 @@
+import os, pickle, numpy as np
+from datetime import datetime
+import tiktoken
+from dotenv import load_dotenv, find_dotenv
+import streamlit as st
+import faiss
+from openai import OpenAI
+import re
+from numpy.linalg import norm
+import redis
+
+import secrets
+import streamlit.components.v1 as components
+from streamlit_cookies_manager import EncryptedCookieManager
+import time
+
+#===================================================================================
+# 쿠키 관리(로그인 관련)
+#===================================================================================
+
+# --- 세팅: origin은 슬래시 없이! ---
+APP_ORIGIN    = "https://lydus-chatbot.streamlit.app"   # 이 Streamlit 앱 origin
+PARENT_ORIGIN = "http://127.0.0.1:5500/index.html"     # 부모 페이지 origin
+# -----------------------------------
+
+cookies = EncryptedCookieManager(prefix="lydus_", password=st.secrets.get("COOKIE_PASSWORD","dev-pass"))
+if not cookies.ready():
+    st.stop()
+
+# (A) 기존 anon-* 값이 남아 있으면 1회 정리
+old = cookies.get("loginid")
+print(old)
+if old and str(old).startswith("anon-"):
+    del cookies["loginid"]
+    cookies.save()
+
+# (B) JS: 부모창에 loginid 요청 -> 응답 받으면 1회성 쿼리로 전달
+components.html(f"""
+<script>
+(function(){{
+  // 자식(이 탭) -> 부모에게 요청 : targetOrigin은 '부모'!
+  if (window.opener) {{
+    window.opener.postMessage("REQUEST_LOGINID", "{PARENT_ORIGIN}");
+  }}
+  // 부모의 응답 수신 : e.origin은 '부모'!
+  window.addEventListener("message", function(e){{
+    if (e.origin !== "{PARENT_ORIGIN}") return;
+    var data = e.data || {{}};
+    if (!data.loginid) return;
+
+    // 1회성으로 URL 쿼리에 싣고 리로드 (서버 파이썬이 ECM에 저장하도록)
+    var u = new URL(window.location.href);
+    u.searchParams.set("li", data.loginid);
+    window.location.replace(u.toString());
+  }});
+}})();
+</script>
+""", height=0)
+
+# (C) 쿼리 수신 시 ECM에 저장하고 URL 정리
+qp = st.query_params
+if "li" in qp:
+    new_id = qp["li"]
+    cookies["loginid"] = new_id
+    cookies.save()
+    # 세션에도 즉시 반영
+    st.session_state["loginid"] = new_id
+    # URL 쿼리 제거
+    st.query_params.clear()
+
+# (D) 최종 사용: 안전 접근 (KeyError 방지)
+loginid = st.session_state.get("loginid") or cookies.get("loginid")
+if loginid:
+    st.session_state["loginid"] = loginid   # 세션에 고정
+    st.success(f"로그인 아이디: {loginid}")
+else:
+    st.info("로그인 아이디 수신 중입니다. 팝업 허용 및 도메인 설정을 확인하세요.")
+#===================================================================================
+# 설정
+#===================================================================================
+load_dotenv(find_dotenv(), override=True)
+
+api_key = os.environ.get('OPENAI_API_KEY')
+client = OpenAI(api_key=api_key)
+
+redis_host = os.environ.get("REDIS_HOST")
+redis_port = int(os.environ.get("REDIS_PORT"))
+redis_password = os.environ.get("REDIS_PASSWORD")
+
+EMBED_MODEL     = "text-embedding-3-small"
+CHAT_MODEL_GENERAL      = "gpt-4.1"
+CHAT_MODEL_MINI      = "gpt-4o-mini"
+TOP_K           = 4
+r = redis.Redis(
+    host=redis_host,
+    port=redis_port,
+    decode_responses=True,
+    username="default",
+    password=redis_password,
+)
+STOPWORDS = ["알려", "수", "있어", "어디", "나오", "는지", "에서", "으로", "하고", "가이드라인", '확인', '확인하고', '싶어', '페이지', '어느', '부분']
+TOKEN_LIMIT = 50 # 하루 한 사람당 1000원 -> 260000토큰?
+USER_ID = "user124"
+
+# 1권
+IDX_FILE_1        = "data/book1_faiss_chunk_250804.index"
+META_FILE_1       = "data/book1_meta_chunk_250804.pkl"
+SECTION_IDX_FILE_1 = "data/book1_faiss_section_keywords_250804.index"
+SECTION_META_FILE_1 = "data/book1_meta_section_keywords_250804.pkl"
+PAGE_IDX_FILE_1 = "data/book1_faiss_page_250804.index"
+PAGE_META_FILE_1 = "data/book1_meta_page_250804.pkl"
+# 2권
+IDX_FILE_2        = "data/book2_faiss_chunk_250804.index"
+META_FILE_2       = "data/book2_meta_chunk_250804.pkl"
+SECTION_IDX_FILE_2 = "data/book2_faiss_section_keywords_250804.index"
+SECTION_META_FILE_2 = "data/book2_meta_section_keywords_250804.pkl"
+PAGE_IDX_FILE_2 = "data/book2_faiss_page_250804.index"
+PAGE_META_FILE_2 = "data/book2_meta_page_250804.pkl"
+# 3권
+IDX_FILE_3        = "data/book3_faiss_chunk_250801.index"
+META_FILE_3       = "data/book3_meta_chunk_250801.pkl"
+SECTION_IDX_FILE_3 = "data/book3_faiss_section_keywords_250801.index"
+SECTION_META_FILE_3 = "data/book3_meta_section_keywords_250801.pkl"
+PAGE_IDX_FILE_3 = "data/book3_faiss_page_250801.index"
+PAGE_META_FILE_3 = "data/book3_meta_page_250801.pkl"
+# 4권
+IDX_FILE_4        = "data/book4_faiss_chunk_table_250808.index"
+META_FILE_4       = "data/book4_meta_chunk_table_250808.pkl"
+SECTION_IDX_FILE_4 = "data/book4_faiss_section_keywords_250808.index"
+SECTION_META_FILE_4 = "data/book4_meta_section_keywords_250808.pkl"
+PAGE_IDX_FILE_4 = "data/book4_faiss_page_250808.index"
+PAGE_META_FILE_4 = "data/book4_meta_page_250808.pkl"
+
+with open(PAGE_META_FILE_1, "rb") as f:
+    meta_pages_1 = pickle.load(f)
+with open(SECTION_META_FILE_1, "rb") as f:
+    meta_keywords_1 = pickle.load(f)
+with open(META_FILE_1, "rb") as f:
+    meta_chunks_1 = pickle.load(f)
+
+with open(PAGE_META_FILE_2, "rb") as f:
+    meta_pages_2 = pickle.load(f)
+with open(SECTION_META_FILE_2, "rb") as f:
+    meta_keywords_2 = pickle.load(f)
+with open(META_FILE_2, "rb") as f:
+    meta_chunks_2 = pickle.load(f)
+
+with open(PAGE_META_FILE_3, "rb") as f:
+    meta_pages_3 = pickle.load(f)
+with open(SECTION_META_FILE_3, "rb") as f:
+    meta_keywords_3 = pickle.load(f)
+with open(META_FILE_3, "rb") as f:
+    meta_chunks_3 = pickle.load(f)
+
+with open(PAGE_META_FILE_4, "rb") as f:
+    meta_pages_4 = pickle.load(f)
+with open(SECTION_META_FILE_4, "rb") as f:
+    meta_keywords_4 = pickle.load(f)
+with open(META_FILE_4, "rb") as f:
+    meta_chunks_4 = pickle.load(f)
+
+PAGE_VOLUME_LIST = [("1권", meta_pages_1), ("2권", meta_pages_2), ("3권", meta_pages_3), ("4권", meta_pages_4)]
+SECTION_VOLUME_LIST = [
+    ("1권", meta_keywords_1),
+    ("2권", meta_keywords_2),
+    ("3권", meta_keywords_3),
+    ("4권", meta_keywords_4),
+]
+#===================================================================================
+# 질문의 키워드를 추출하는 함수
+#===================================================================================
+def extract_keywords(question):
+    prompt = (
+        "From the question below, extract all the main subject, keyword, or technical term the user is asking about. "
+        "Split all compound words and list every technical term separately, separated by commas. "
+        "Do not group multiple terms together. "
+        "Do not include any other words or explanation.\n\n"
+        f"Question: {question}"
+    )
+    response = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0,
+        max_tokens=20,
+    )
+    return [kw.strip() for kw in response.choices[0].message.content.strip().split(',')]
+
+#===================================================================================
+# 질문이 1)위치(슈도코드 포함) 2)내용 인지를 판단하는 함수들
+#===================================================================================
+def is_location_question(question):
+    keywords = ["어디", "절", "위치", "나와", "포함", "섹션", "부분", "들어있", "언급", "포함된", "수록"]
+    return any(k in question for k in keywords)
+
+def is_code_question(question):
+    # 1차: 단순 키워드 체크
+    keywords = ["슈도코드", "코드", "구현"]
+    if any(k in question for k in keywords):
+        return True
+    # 2차: 다양한 표기(띄어쓰기, 영어, 오타 등) 커버
+    if is_pseudocode(question):
+        return True
+    return False
+
+def is_location_or_code_question_llm(question):
+    prompt = (
+        'If the following question is about the location of content '
+        '(such as which section, part, where, included, mentioned, etc.) '
+        'or about code, pseudocode, or implementation, answer YES. Otherwise, answer NO.\n\n'
+        f'Q: {question}\n'
+    )
+    response = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0,
+        max_tokens=3,
+    )
+    answer = response.choices[0].message.content.strip().upper()
+    return answer == "YES"
+
+def classify_question(question):
+    # 1. 코드/구현 관련 질문인가?
+    if is_code_question(question) or is_location_or_code_question_llm(question) == "YES":
+        return "code"
+    # 2. 위치 관련 질문인가?
+    if is_location_question(question) or is_location_or_code_question_llm(question) == "NO":
+        return "location"
+    # 4. 그 외 (임베딩 검색 등)
+    return "other"
+
+#===================================================================================
+# 질문 임베딩 및 텍스트 임베딩 파일 불러오는 함수들
+#===================================================================================
+def _embed_text(texts):
+    resp = client.embeddings.create(model=EMBED_MODEL, input=texts)
+    return [np.array(d.embedding, dtype="float32") for d in resp.data]
+
+def build_or_load():
+    loaded = []
+    if os.path.exists(IDX_FILE_1) and os.path.exists(META_FILE_1):
+        index_1 = faiss.read_index(IDX_FILE_1)
+        loaded.append(("1권", index_1, meta_chunks_1))
+    if os.path.exists(IDX_FILE_2) and os.path.exists(META_FILE_2):
+        index_2 = faiss.read_index(IDX_FILE_2)
+        loaded.append(("2권", index_2, meta_chunks_2))
+    if os.path.exists(IDX_FILE_3) and os.path.exists(META_FILE_3):
+        index_3 = faiss.read_index(IDX_FILE_3)
+        loaded.append(("2권", index_3, meta_chunks_3))
+    if os.path.exists(IDX_FILE_4) and os.path.exists(META_FILE_4):
+        index_4 = faiss.read_index(IDX_FILE_4)
+        loaded.append(("4권", index_4, meta_chunks_4))
+    if not loaded:
+        raise FileNotFoundError("인덱스 파일이 존재하지 않습니다.")
+    return loaded
+
+#===================================================================================
+# 질문 검색 및 답변 생성 함수들
+#===================================================================================
+def retrieve_multi_volume(query, top_k=4):
+    q_emb = np.array(_embed_text([query])[0]).reshape(1, -1)
+    results = []
+    for label, index, meta in CHUNKS_VOLUME_LIST:
+        D, I = index.search(q_emb, top_k)
+        for idx in I[0]:
+            chunk = meta[idx]
+            # 출처 정보 추가 (권)
+            chunk = dict(chunk)
+            chunk["volume"] = label
+            results.append(chunk)
+    return results
+
+def rag_chat_multi_volume(query, history, model=CHAT_MODEL_MINI):
+    context_blobs = retrieve_multi_volume(query)
+    # 각 블록에 출처 표시
+    context_text = "\n\n".join(
+        f"[{c['volume']}] {c['text']}" for c in context_blobs
+    )
+
+    messages = (
+        [{"role": "system",
+          "content": "Task: \n"
+                     "You are a helpful RAG assistant. Given a user question and context, answer appropriately."
+
+                     "Instructions: \n"
+                     "1. Use only the provided context to answer the user's question."
+                     "2. For the terms '정밀도 (precision)' and '정밀성 (preciseness)':"
+                            "- Do NOT ever confuse or mix up these two terms."
+                            "- Each term is a distinct metric with its own unique definition and formula."
+                            "- If the question is about '정밀도', only provide the definition and formula for precision."
+                            "- If the question is about '정밀성', only provide the definition and formula for preciseness."
+                     "3. For any formula or equation mentioned in the document:" 
+                            "- Show it **exactly** as it appears in the text."    
+                            "- Do not modify, rephrase, or re-typeset."
+                            "- Just copy and paste the original LaTeX or expression as-is from the document."
+
+                     "Output Format:\n"
+                     "1. Write your answer as a concise, direct response."
+                     "2. Keep your response brief and clear."
+                     "3. If you cannot answer based on the context, reply exactly: '제가 답변하기 어려운 질문입니다. 연구진에게 문의하세요.'"
+          }]
+        + history
+        + [{"role": "user", "content": f"Context:\n{context_text}\n\nQuestion: {query}"}]
+    )
+
+    return client.chat.completions.create(
+        model       = model,
+        messages    = messages,
+        stream      = True,
+        max_tokens  = 512, # 고려
+        temperature = 0,
+    )
+#===================================================================================
+# 수식 표현 함수들
+#===================================================================================
+# \[ $...$ \]를 \[...\]로 변환
+def clean_text(text):
+    # 블록 수식(\[ ... \]) 내부의 한 개짜리 백슬래시를 모두 두 개로
+    def replacer(match):
+        content = match.group(1)
+        # 이미 \\는 건드리지 않고, \만 두 개로!
+        content_fixed = re.sub(r'\\([a-zA-Z]+)', r'\\\1', content)
+        return f"\\[{content_fixed}\\]"
+    return re.sub(r'\\\[(.*?)\\\]', replacer, text, flags=re.DOTALL)
+
+# latex 수식에서 한글이 포함된 분수 표현을 예쁘게 가공
+def enhance_korean_fraction(expr: str) -> str:
+    # 한글 문자열을 \text{...}로 감싸기
+    def wrap_korean(text: str):
+        return re.sub(r"([가-힣]+)", r"\\text{\1}", text)
+
+    pattern = r"\\frac\s*{\s*(.+?)\s*}\s*{\s*(.+?)\s*}"
+
+    def repl(match):
+        numerator = wrap_korean(match.group(1)) # 분자
+        denominator = wrap_korean(match.group(2)) # 분모
+
+        # displaystyle 및 수직 정렬 추가
+        numerator = rf"\rule{{0pt}}{{1em}}{numerator}"
+        denominator = rf"{denominator}\rule[-1em]{{0pt}}{{0pt}}"
+        return rf"\displaystyle \frac{{{numerator}}}{{{denominator}}}"
+
+    return re.sub(pattern, repl, expr)
+
+# latex를 인라인 또는 블록으로 표현할지 판단
+def display_with_latex(text):
+    # 블록 수식 구간 split
+    blocks = re.split(r'\\\[(.*?)\\\]', text, flags=re.DOTALL)
+    for i, block in enumerate(blocks):
+        if i % 2 == 0:
+            # 설명문, 인라인 텍스트
+            st.write(block)
+        else:
+            # LaTeX 블록 수식
+            enhanced = enhance_korean_fraction(block.strip())
+            st.latex(enhanced)
+
+#===================================================================================
+# 페이지인지, 슈도코드 절인지를 확인해서 해당 함수를 불러주는 함수
+#===================================================================================
+def query_by_question_subject_location_pseudo(query, question_subject):
+    q_type = clean_phrase(query)
+
+    if question_subject in ("location", "location_or_code"):
+        return find_in_pages(q_type)
+    elif question_subject == "code" or is_pseudocode(query) == "슈도코드":
+        return find_pseudocode_sections(q_type)
+    else:
+        return None
+
+#===================================================================================
+# 위치 질문에 대한 함수
+#===================================================================================
+def find_in_pages(q_type):
+    keywords_list = extract_nouns(q_type)
+    n = len(keywords_list)
+    answer_lines = []
+    shown_phrases = set()  # 이미 표시한 표기(대표 표기, 붙여쓰기/띄어쓰기 모두)
+
+    # 2개 이상 단어면 복합어 우선!
+    if n >= 2:
+        phrase = " ".join(keywords_list)
+        phrase_nospace = phrase.replace(" ", "")
+        # 대표 표기는 띄어쓰기 있는 쪽으로!
+        found = False
+        for cand, display_phrase in [(phrase, phrase), (phrase_nospace, phrase)]:
+            if display_phrase in shown_phrases:
+                continue
+            for label, meta_pages in PAGE_VOLUME_LIST:
+                matched_pages = find_pages_with_keywords([cand], meta_pages)
+                if matched_pages:
+                    answer_lines.append(
+                        f'**{display_phrase}**은(는) **{label}** {", ".join(map(str, matched_pages))}쪽(페이지)에 나옵니다.\n'
+                    )
+                    shown_phrases.add(display_phrase)
+                    found = True
+        if found:
+            return "\n".join(answer_lines)
+
+    # 복합어로 못 찾았을 때만 단일어로 각자 검색
+    for k in keywords_list:
+        if k in shown_phrases:
+            continue
+        for label, meta_pages in PAGE_VOLUME_LIST:
+            matched_pages = find_pages_with_keywords([k], meta_pages)
+            if matched_pages:
+                answer_lines.append(
+                    f'**{k}**은(는) **{label}** {", ".join(map(str, matched_pages))}쪽(페이지)에 나옵니다.\n'
+                )
+                shown_phrases.add(k)
+    return "\n".join(answer_lines) if answer_lines else "해당 페이지를 찾지 못했습니다."
+
+#===================================================================================
+# 슈도코드 질문에 대한 함수
+#===================================================================================
+def find_pseudocode_sections(q_type):
+    keywords = extract_keywords(q_type)
+    concept_keywords = [k for k in keywords if not is_pseudocode_keyword(k)]
+    phrase = " ".join(concept_keywords)
+    matched_sections = []
+
+    for label, meta_keywords in SECTION_VOLUME_LIST:
+        for meta_kw in meta_keywords:
+            # 복합어(띄어쓰기/붙여쓰기) 모두 검사
+            candidates = [phrase]
+            if " " in phrase:
+                candidates.append(phrase.replace(" ", ""))
+            for cand in candidates:
+                if any(cand in item for item in meta_kw["keywords"]):
+                    if "슈도 코드" in meta_kw["text"] or "슈도코드" in meta_kw["text"]:
+                        matched_sections.append((label, meta_kw))
+
+    if matched_sections:
+        answers = [
+            f"**{label}** {section.get('section', '해당 절')} 절에 슈도코드가 있습니다."
+            for label, section in matched_sections
+        ]
+        return "\n\n".join(answers)
+    else:
+        return "해당 절에는 슈도코드가 없습니다."
+
+#===================================================================================
+# 주어진 키워드 리스트에서, 1~3개씩 단어를 연속으로 묶은 모든 phrase를 리스트로 반환하는 함수
+#===================================================================================
+def ngram_phrases(keywords_list, max_n=3):
+    ngrams = []
+    for n in range(max_n, 0, -1):
+        for i in range(len(keywords_list) - n + 1):
+            phrase = " ".join(keywords_list[i:i+n])
+            ngrams.append(phrase)
+    return ngrams
+
+#===================================================================================
+# 키워드를 이용하여 페이지를 찾아내는 함수
+#===================================================================================
+def find_pages_with_keywords(keywords, meta_pages):
+    results = []
+    if isinstance(keywords, str):
+        keywords = [keywords]
+
+    for page_meta in meta_pages:
+        text = page_meta["text"]
+        text_nospace = re.sub(r'\s+', '', text)  # 모든 공백류 제거
+        if all(
+            k.replace(" ", "") in text_nospace
+            for k in keywords
+        ):
+            results.append(page_meta["page"])
+    return sorted(set(results))
+
+#===================================================================================
+# 답변하기 어려운 질문인지 확인하는 함수
+#===================================================================================
+def is_insufficient_answer(answer: str) -> bool:
+    return (
+        "답변하기 어려운 질문입니다. 연구진에게 문의하세요" in answer
+    )
+
+#===================================================================================
+# 단일 텍스트 임베딩 함수
+#===================================================================================
+def get_embedding(text):
+    return _embed_text([text])[0]
+
+#===================================================================================
+# 두 임베딩 벡터의 코사인 유사도 계산 함수
+#===================================================================================
+def cosine_similarity(vec1, vec2):
+    return np.dot(vec1, vec2) / (norm(vec1) * norm(vec2))
+
+#===================================================================================
+# 슈도코드 관련 함수들
+#===================================================================================
+# 슈도 코드, 수도코드 등 -> 모두 "슈도코드"로 target 정함
+def is_pseudocode(query: str, threshold=0.6) -> str | bool:
+    target = "슈도코드"
+    # target_vec = get_embedding(target)
+    target_vec = get_embedding_cached("슈도코드")  # ✅ 캐시 사용
+
+    # 영어 표현을 한글식으로 치환
+    normalized_query = query.lower().replace("pseudo", "슈도").replace("code", "코드")
+
+    candidates = normalized_query.split(" ")
+    for i in range(len(candidates)):
+        for j in range(i + 1, min(len(candidates), i + 2)):
+            phrase = " ".join(candidates[i:j+1])
+
+            try:
+                # vec = get_embedding(phrase)
+                vec = get_embedding_cached(phrase)  # ✅ 캐시 사용
+
+                sim = cosine_similarity(vec, target_vec)
+                if sim >= threshold:
+                    return target
+            except Exception as e:
+                continue
+
+    return False
+
+# 어떤 슈도코드를 원하는 것인지 주요 키워드를 뽑아내는 함수
+def is_pseudocode_keyword(word: str, threshold=0.4) -> bool:
+    # 임베딩 유사도 기반으로 판별
+    target = "슈도코드"
+    word = word.lower().replace("pseudo", "슈도").replace("code", "코드")
+    target_vec = get_embedding(target)
+    word_vec = get_embedding(word)
+
+    sim = cosine_similarity(word_vec, target_vec)
+    return sim >= threshold
+
+#===================================================================================
+# 조사를 제거하는 함수
+#===================================================================================
+def clean_phrase(phrase):
+    # "의", "가", "을", "를" 등의 조사를 모두 제거
+    return re.sub(r'(의|가 |을|를|은|는|이 |에|와|과|로|으로|,)', ' ', phrase)
+
+#===================================================================================
+# 2글자 이상 한글, 연속 추출 함수
+#===================================================================================
+def extract_nouns(text):
+    # 기존: 모든 2글자 이상 한글 추출
+    words = re.findall(r'[가-힣]{2,}', text)
+    # 불용어 제거
+    return [w for w in words if w not in STOPWORDS]
+
+#===================================================================================
+# 어떤 모델로 답변했는지 체크 함수
+#===================================================================================
+def contains_model_tag(text, model):
+    # 모델명 문구가 이미 포함됐는지 체크
+    tag = f"{model}로 답변"
+    tag2 = f"**{model}**로 답변"
+    return (tag in text) or (tag2 in text)
+
+#===================================================================================
+# 토큰 제한 함수들
+#===================================================================================
+# 토큰 계산
+def count_tokens(text):
+    enc = tiktoken.encoding_for_model("gpt-3.5-turbo")
+    return len(enc.encode(text))
+
+# 새 질문 처리
+def handle_question(prompt):
+    prompt_tokens = count_tokens(prompt)
+    current = int(r.get(key) or 0)
+
+    if current + prompt_tokens > TOKEN_LIMIT:
+        return "오늘의 토큰 사용량을 초과했습니다. 내일 다시 질문해주세요."
+
+    # 토큰 증가
+    r.incrby(key, prompt_tokens)
+    return "질문 처리 완료"
+
+# 토큰 사용량 확인
+def get_token_usage(user_id):
+    today = datetime.now().strftime("%Y-%m-%d")
+    key = f"tokens:{user_id}:{today}"
+    return int(r.get(key) or 0)
+
+#===================================================================================
+# 캐시 저장
+#===================================================================================
+cache = {}
+def get_embedding_cached(text):
+    if text in cache:
+        return cache[text]  # 👉 저장된 값 재사용
+    emb = get_embedding(text)
+    cache[text] = emb       # 👉 결과를 캐시에 저장
+    return emb
+
+#===================================================================================
+# Streamlit UI
+#===================================================================================
+CHUNKS_VOLUME_LIST = build_or_load()
+today = datetime.now().strftime("%Y-%m-%d")
+key = f"tokens:{USER_ID}:{today}"
+
+st.set_page_config(page_title="LYDUS Chatbot")
+st.title("🖥️ LYDUS Chatbot")
+st.error("이 챗봇은 참고용으로 제공되며, 중요한 내용은 반드시 공식 가이드라인을 확인하세요.")
+
+# 세션 간 데이터를 저장하고 유지하기 위한 초기화 코드
+if "history" not in st.session_state:
+    st.session_state.history = []
+
+# 과거 대화 전체 출력
+for h in st.session_state.history:
+    with st.chat_message(h["role"]):
+        display_with_latex(h["content"])
+
+# 새 질문 입력받기
+if prompt := st.chat_input("가이드라인에 대해 질문하세요…"):
+    # 토큰
+    result = handle_question(prompt)
+    usage = get_token_usage(USER_ID)
+    st.markdown(f"오늘 사용한 토큰 수: **{usage} / {TOKEN_LIMIT}**")
+
+    # 3. user 질문 즉시 출력
+    st.chat_message("user").markdown(prompt)
+    st.session_state.history.append({"role": "user", "content": prompt})
+
+    with st.chat_message("assistant"):
+        if "토큰 사용량을 초과" in result:
+            st.markdown(f"{result}")
+            st.stop()
+
+        question = classify_question(prompt)
+        if question == "other":
+            full_response = ""
+            for chunk in rag_chat_multi_volume(prompt, st.session_state.history):
+                delta = chunk.choices[0].delta.content or ""
+                full_response += delta
+
+            if is_insufficient_answer(full_response):
+                full_response = ""
+                for chunk in rag_chat_multi_volume(prompt, st.session_state.history, model=CHAT_MODEL_GENERAL):
+                    delta = chunk.choices[0].delta.content or ""
+                    full_response += delta
+                if not contains_model_tag(full_response, CHAT_MODEL_GENERAL):
+                    full_response += f"\n\n**{CHAT_MODEL_GENERAL}**로 답변"
+            else:
+                if not contains_model_tag(full_response, CHAT_MODEL_MINI):
+                    full_response += f"\n\n**{CHAT_MODEL_MINI}**로 답변"
+
+            display_with_latex(full_response)
+            st.session_state.history.append({
+                "role": "assistant",
+                "content": full_response
+            })
+
+            st.stop()
+
+        # 위치, 슈도코드를 물어보는 경우
+        answer = query_by_question_subject_location_pseudo(prompt, question)
+        if answer:
+            display_with_latex(answer)
+            st.session_state.history.append({
+                "role": "assistant",
+                "content": answer
+            })
+            st.stop()
