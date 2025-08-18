@@ -29,8 +29,8 @@ if "loginid" not in st.session_state:
     components.html("""
     <script>
     (function(){
+      console.log(loginid);
       try {
-        console.log(loginid);
         if (window.name) {
           var payload = null;
           try { payload = JSON.parse(window.name); } catch(e){}
