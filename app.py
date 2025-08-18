@@ -10,7 +10,6 @@ from numpy.linalg import norm
 import redis
 
 import streamlit.components.v1 as components
-from streamlit_cookies_manager import EncryptedCookieManager
 
 #===================================================================================
 # 쿠키 관리(로그인 관련)
@@ -21,51 +20,40 @@ APP_ORIGIN    = "https://test-lydus-chatbot.streamlit.app"   # 이 Streamlit 앱
 PARENT_ORIGIN = "http://127.0.0.1:5500/index.html"     # 부모 페이지 origin
 # -----------------------------------
 
-cookies = EncryptedCookieManager(prefix="lydus_", password=st.secrets.get("COOKIE_PASSWORD","dev-pass"))
-if not cookies.ready():
-    st.stop()
-
 # window.name에서 loginid를 꺼내 URL 쿼리(li)로 1회 주입 → 파이썬이 받아 쿠키/세션에 저장 → URL 정리
-components.html("""
-<script>
-(function(){
-  try {
-    // window.name에 JSON이 실려 온 경우 파싱
-    var payload = null;
-    if (window.name) {
-      try { payload = JSON.parse(window.name); } catch(e){}
-    }
-    if (payload && payload.loginid) {
-      // 1회성으로 쿼리에 붙여 리로드 (서버 파이썬에서 처리)
-      var u = new URL(window.location.href);
-      u.searchParams.set("li", payload.loginid);
-      // 한 번 쓰고 나면 민감정보 남지 않게 name 초기화
-      window.name = "";
-      window.location.replace(u.toString());
-    }
-  } catch(e) {
-    console.log("[child] window.name parse error", e);
-  }
-})();
-</script>
-""", height=0)
+if "loginid" not in st.session_state:
+    components.html("""
+    <script>
+    (function(){
+      try {
+        if (window.name) {
+          var payload = null;
+          try { payload = JSON.parse(window.name); } catch(e){}
+          if (payload && payload.loginid) {
+            var u = new URL(window.location.href);
+            u.searchParams.set("li", payload.loginid); // 1회성 전달
+            window.name = ""; // 민감정보 잔류 방지
+            window.location.replace(u.toString()); // 쿼리 포함 주소로 리로드
+          }
+        }
+      } catch(e) { console.log("[child] window.name parse error", e); }
+    })();
+    </script>
+    """, height=0)
 
-# 쿼리로 들어오면 저장하고 URL 정리
+# 2) 쿼리로 들어온 li → 세션에 저장 → URL에서 즉시 제거 → 깔끔히 재실행
 qp = st.query_params
 if "li" in qp:
-    new_id = qp["li"]
-    cookies["loginid"] = new_id
-    cookies.save()
-    st.session_state["loginid"] = new_id
-    st.query_params.clear()
-    st.rerun()
+    st.session_state["loginid"] = qp["li"]
+    st.query_params.clear()   # 주소창에서 ?li= 제거
+    st.rerun()                # 깨끗한 URL로 재실행
 
-loginid = st.session_state.get("loginid") or cookies.get("loginid")
-if loginid:
-    st.success(f"로그인 아이디: {loginid}")
+# 3) 최종 표시
+uid = st.session_state.get("loginid")
+if uid:
+    st.success(f"로그인 아이디: {uid}")
 else:
-    st.info("로그인 아이디 수신 대기 중입니다.")
-
+    st.info("부모 HTML 페이지에서 버튼으로 열어주세요.")
 #===================================================================================
 # 설정
 #===================================================================================
