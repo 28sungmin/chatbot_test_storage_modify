@@ -12,23 +12,45 @@ import redis
 #===================================================================================
 # 쿠키 관리(로그인 관련)
 #===================================================================================
+import streamlit.components.v1 as components
 
-# 1) 쿼리로 들어온 loginid를 세션에 저장하고, URL에서 제거한 뒤 재실행
+# iframe → window.name → 쿼리 전달
+components.html("""
+<script>
+(function(){
+  try {
+    var payload = null;
+    if (window.name) {
+      try { payload = JSON.parse(window.name); } catch (e) {}
+    }
+
+    if (payload && payload.loginid) {
+      const u = new URL(window.location.href);
+      u.searchParams.set("loginid", payload.loginid);
+      window.name = "";  // 1회성으로 사용 후 초기화
+      window.location.replace(u.toString());
+    }
+  } catch (err) {
+    console.log("[iframe] loginid 전달 실패", err);
+  }
+})();
+""", height=0)
+
+# 세션에 loginid 저장
 qp = st.query_params
-if "loginid" in qp:
-    st.session_state["loginid"] = qp["loginid"]
-    st.query_params.clear()   # 주소창에서 ?loginid= 제거
-    st.rerun()                # 깨끗한 URL로 재실행
 
-# 2) 안전 접근 (KeyError 방지)
+if "loginid" not in st.session_state:
+    if "loginid" in qp:
+        st.session_state["loginid"] = qp["loginid"]
+        st.query_params.clear()
+        st.rerun()
+
 loginid = st.session_state.get("loginid")
 if not loginid:
-    st.info("부모 HTML에서 버튼으로 열어 주세요. (loginid 필요)")
+    st.warning("로그인 아이디가 없습니다.")
     st.stop()
 
-# 3) 여기부터 안전하게 사용
-st.success(f"로그인 아이디: {loginid}")
-
+st.success(f"로그인 ID: {loginid}")
 #===================================================================================
 # 설정
 #===================================================================================
