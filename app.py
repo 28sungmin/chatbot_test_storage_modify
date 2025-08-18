@@ -21,35 +21,36 @@ APP_ORIGIN    = "https://test-lydus-chatbot.streamlit.app"   # 이 Streamlit 앱
 PARENT_ORIGIN = "http://127.0.0.1:5500/index.html"     # 부모 페이지 origin
 # -----------------------------------
 
-
-cookies = EncryptedCookieManager(prefix="lydus_", password=st.secrets.get("COOKIE_PASSWORD", "dev-pass"))
+cookies = EncryptedCookieManager(prefix="lydus_", password=st.secrets.get("COOKIE_PASSWORD","dev-pass"))
 if not cookies.ready():
     st.stop()
 
-# 1) 부모에게 loginid 요청 → 응답 받으면 쿼리에 1회 실어서 리로드
-components.html(f"""
+# window.name에서 loginid를 꺼내 URL 쿼리(li)로 1회 주입 → 파이썬이 받아 쿠키/세션에 저장 → URL 정리
+components.html("""
 <script>
-(function(){{
-  console.log("[child] opener?", !!window.opener);
-  if (window.opener) {{
-    console.log("[child] request loginid to parent:", "{PARENT_ORIGIN}");
-    window.opener.postMessage("REQUEST_LOGINID", "{PARENT_ORIGIN}");
-  }}
-  window.addEventListener("message", function(e){{
-    console.log("[child] got message:", e.origin, e.data);
-    if (e.origin !== "{PARENT_ORIGIN}") return;
-    var data = e.data || {{}};
-    if (!data.loginid) return;
-    var u = new URL(window.location.href);
-    u.searchParams.set("li", data.loginid);
-    console.log("[child] reloading with li param:", data.loginid);
-    window.location.replace(u.toString());
-  }});
-}})();
+(function(){
+  try {
+    // window.name에 JSON이 실려 온 경우 파싱
+    var payload = null;
+    if (window.name) {
+      try { payload = JSON.parse(window.name); } catch(e){}
+    }
+    if (payload && payload.loginid) {
+      // 1회성으로 쿼리에 붙여 리로드 (서버 파이썬에서 처리)
+      var u = new URL(window.location.href);
+      u.searchParams.set("li", payload.loginid);
+      // 한 번 쓰고 나면 민감정보 남지 않게 name 초기화
+      window.name = "";
+      window.location.replace(u.toString());
+    }
+  } catch(e) {
+    console.log("[child] window.name parse error", e);
+  }
+})();
 </script>
 """, height=0)
 
-# 2) 쿼리로 들어온 li → ECM에 저장 → URL 정리 + rerun
+# 쿼리로 들어오면 저장하고 URL 정리
 qp = st.query_params
 if "li" in qp:
     new_id = qp["li"]
@@ -59,12 +60,11 @@ if "li" in qp:
     st.query_params.clear()
     st.rerun()
 
-# 3) 최종 확인
 loginid = st.session_state.get("loginid") or cookies.get("loginid")
 if loginid:
     st.success(f"로그인 아이디: {loginid}")
 else:
-    st.info("로그인 아이디 수신 대기 중입니다. (부모 페이지에서 열었는지/팝업 허용/ORIGIN 확인)")
+    st.info("로그인 아이디 수신 대기 중입니다.")
 
 #===================================================================================
 # 설정
