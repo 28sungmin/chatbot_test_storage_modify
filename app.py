@@ -16,7 +16,7 @@ qp = st.query_params
 
 if "loginid" in qp and "loginid" not in st.session_state:
     st.session_state["loginid"] = qp["loginid"]
-    st.query_params.clear()  # URL 정리 (iframe 내부 URL만 바뀜)
+    st.query_params.clear()
 
 uid = st.session_state.get("loginid")
 if uid:
