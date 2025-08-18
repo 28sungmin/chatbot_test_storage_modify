@@ -564,6 +564,9 @@ if prompt := st.chat_input("가이드라인에 대해 질문하세요…"):
     usage = get_token_usage(USER_ID)
     st.markdown(f"오늘 사용한 토큰 수: **{usage} / {TOKEN_LIMIT}**")
 
+    st.write("현재 쿼리:", dict(st.query_params))
+    st.write("세션 상태:", st.session_state)
+
     # 3. user 질문 즉시 출력
     st.chat_message("user").markdown(prompt)
     st.session_state.history.append({"role": "user", "content": prompt})
