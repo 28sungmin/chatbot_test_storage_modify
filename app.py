@@ -17,7 +17,7 @@ from streamlit_cookies_manager import EncryptedCookieManager
 #===================================================================================
 
 # --- 세팅: origin은 슬래시 없이! ---
-APP_ORIGIN    = "https://lydus-chatbot.streamlit.app"   # 이 Streamlit 앱 origin
+APP_ORIGIN    = "https://test-lydus-chatbot.streamlit.app"   # 이 Streamlit 앱 origin
 PARENT_ORIGIN = "http://127.0.0.1:5500/index.html"     # 부모 페이지 origin
 # -----------------------------------
 
