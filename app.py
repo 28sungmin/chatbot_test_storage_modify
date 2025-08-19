@@ -545,15 +545,19 @@ today = datetime.now().strftime("%Y-%m-%d")
 key = f"tokens:{USER_ID}:{today}"
 
 st.set_page_config(page_title="LYDUS Chatbot")
+# ✅ Streamlit footer / fullscreen 버튼 숨기기
+hide_streamlit_style = """
+    <style>
+    #MainMenu {visibility: hidden;}       /* 왼쪽 위 햄버거 메뉴 */
+    footer {visibility: hidden;}          /* 하단 footer */
+    .stAppDeployButton {display: none;}   /* 우측 상단 deploy 버튼 */
+    .viewerBadge_container__1QSob {display: none;} /* 하단 Built with Streamlit */
+    </style>
+"""
+st.markdown(hide_streamlit_style, unsafe_allow_html=True)
+
 st.title("🖥️ LYDUS Chatbot")
 st.error("이 챗봇은 참고용으로 제공되며, 중요한 내용은 반드시 공식 가이드라인을 확인하세요.")
-
-hide_streamlit_style = """
-            <style>
-            footer {visibility: hidden;}
-            </style>
-            """
-st.markdown(hide_streamlit_style, unsafe_allow_html=True)
 
 # 세션 간 데이터를 저장하고 유지하기 위한 초기화 코드
 if "history" not in st.session_state:
