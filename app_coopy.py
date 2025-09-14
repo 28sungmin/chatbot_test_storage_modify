@@ -8,37 +8,21 @@ from openai import OpenAI
 import re
 from numpy.linalg import norm
 import redis
-from streamlit_js_eval import streamlit_js_eval
 
 #===================================================================================
-# ip별 token 제한
+# 로그인 관련
 #===================================================================================
-def _normalize_ip(ip: str) -> str:
-    # Redis 키에 안전하도록 특수문자 정리
-    return re.sub(r'[^0-9a-zA-Z\.\-_:]', '_', ip or "")
+qp = st.query_params
 
-def get_client_ip() -> str:
-    """
-    브라우저에서 직접 공인 IP를 조회. 실패 시 빈 문자열 반환.
-    """
-    try:
-        ip = streamlit_js_eval(
-            js_expressions="""
-              (async () => {
-                try {
-                  const r = await fetch('https://api64.ipify.org?format=json');
-                  const j = await r.json();
-                  return j.ip || '';
-                } catch(e) { return ''; }
-              })()
-            """,
-            key="get_ip_js_eval",
-            want_output=True,
-        )
-        return _normalize_ip(ip) if isinstance(ip, str) else ""
-    except Exception:
-        return ""
+if "loginid" in qp and "loginid" not in st.session_state:
+    st.session_state["loginid"] = qp["loginid"]
+    st.query_params.clear()
 
+uid = st.session_state.get("loginid")
+if uid:
+    st.success(f"로그인 아이디: {uid}")
+else:
+    st.warning("로그인 아이디 없음")
 #===================================================================================
 # 설정
 #===================================================================================
@@ -64,35 +48,36 @@ r = redis.Redis(
 )
 STOPWORDS = ["알려", "수", "있어", "어디", "나오", "는지", "에서", "으로", "하고", "가이드라인", '확인', '확인하고', '싶어', '페이지', '어느', '부분']
 TOKEN_LIMIT = 277000
+USER_ID = uid
 
 # 1권
-IDX_FILE_1        = "book1_faiss_chunk_250804.index"
-META_FILE_1       = "book1_meta_chunk_250804.pkl"
-SECTION_IDX_FILE_1 = "book1_faiss_section_keywords_250804.index"
-SECTION_META_FILE_1 = "book1_meta_section_keywords_250804.pkl"
-PAGE_IDX_FILE_1 = "book1_faiss_page_250804.index"
-PAGE_META_FILE_1 = "book1_meta_page_250804.pkl"
+IDX_FILE_1        = "data/book1_faiss_chunk_250804.index"
+META_FILE_1       = "data/book1_meta_chunk_250804.pkl"
+SECTION_IDX_FILE_1 = "data/book1_faiss_section_keywords_250804.index"
+SECTION_META_FILE_1 = "data/book1_meta_section_keywords_250804.pkl"
+PAGE_IDX_FILE_1 = "data/book1_faiss_page_250804.index"
+PAGE_META_FILE_1 = "data/book1_meta_page_250804.pkl"
 # 2권
-IDX_FILE_2        = "book2_faiss_chunk_table_250804.index"
-META_FILE_2       = "book2_meta_chunk_table_250804.pkl"
-SECTION_IDX_FILE_2 = "book2_faiss_section_keywords_250804.index"
-SECTION_META_FILE_2 = "book2_meta_section_keywords_250804.pkl"
-PAGE_IDX_FILE_2 = "book2_faiss_page_250804.index"
-PAGE_META_FILE_2 = "book2_meta_page_250804.pkl"
+IDX_FILE_2        = "data/book2_faiss_chunk_250804.index"
+META_FILE_2       = "data/book2_meta_chunk_250804.pkl"
+SECTION_IDX_FILE_2 = "data/book2_faiss_section_keywords_250804.index"
+SECTION_META_FILE_2 = "data/book2_meta_section_keywords_250804.pkl"
+PAGE_IDX_FILE_2 = "data/book2_faiss_page_250804.index"
+PAGE_META_FILE_2 = "data/book2_meta_page_250804.pkl"
 # 3권
-IDX_FILE_3        = "book3_faiss_chunk_250801.index"
-META_FILE_3       = "book3_meta_chunk_250801.pkl"
-SECTION_IDX_FILE_3 = "book3_faiss_section_keywords_250801.index"
-SECTION_META_FILE_3 = "book3_meta_section_keywords_250801.pkl"
-PAGE_IDX_FILE_3 = "book3_faiss_page_250801.index"
-PAGE_META_FILE_3 = "book3_meta_page_250801.pkl"
+IDX_FILE_3        = "data/book3_faiss_chunk_250801.index"
+META_FILE_3       = "data/book3_meta_chunk_250801.pkl"
+SECTION_IDX_FILE_3 = "data/book3_faiss_section_keywords_250801.index"
+SECTION_META_FILE_3 = "data/book3_meta_section_keywords_250801.pkl"
+PAGE_IDX_FILE_3 = "data/book3_faiss_page_250801.index"
+PAGE_META_FILE_3 = "data/book3_meta_page_250801.pkl"
 # 4권
-IDX_FILE_4        = "book4_faiss_chunk_table_250808.index"
-META_FILE_4       = "book4_meta_chunk_table_250808.pkl"
-SECTION_IDX_FILE_4 = "book4_faiss_section_keywords_250808.index"
-SECTION_META_FILE_4 = "book4_meta_section_keywords_250808.pkl"
-PAGE_IDX_FILE_4 = "book4_faiss_page_250808.index"
-PAGE_META_FILE_4 = "book4_meta_page_250808.pkl"
+IDX_FILE_4        = "data/book4_faiss_chunk_table_250808.index"
+META_FILE_4       = "data/book4_meta_chunk_table_250808.pkl"
+SECTION_IDX_FILE_4 = "data/book4_faiss_section_keywords_250808.index"
+SECTION_META_FILE_4 = "data/book4_meta_section_keywords_250808.pkl"
+PAGE_IDX_FILE_4 = "data/book4_faiss_page_250808.index"
+PAGE_META_FILE_4 = "data/book4_meta_page_250808.pkl"
 
 with open(PAGE_META_FILE_1, "rb") as f:
     meta_pages_1 = pickle.load(f)
@@ -202,24 +187,16 @@ def build_or_load():
     loaded = []
     if os.path.exists(IDX_FILE_1) and os.path.exists(META_FILE_1):
         index_1 = faiss.read_index(IDX_FILE_1)
-        with open(META_FILE_1, "rb") as f:
-            meta_1 = pickle.load(f)
-        loaded.append(("1권", index_1, meta_1))
+        loaded.append(("1권", index_1, meta_chunks_1))
     if os.path.exists(IDX_FILE_2) and os.path.exists(META_FILE_2):
         index_2 = faiss.read_index(IDX_FILE_2)
-        with open(META_FILE_2, "rb") as f:
-            meta_2 = pickle.load(f)
-        loaded.append(("2권", index_2, meta_2))
+        loaded.append(("2권", index_2, meta_chunks_2))
     if os.path.exists(IDX_FILE_3) and os.path.exists(META_FILE_3):
         index_3 = faiss.read_index(IDX_FILE_3)
-        with open(META_FILE_3, "rb") as f:
-            meta_3 = pickle.load(f)
-        loaded.append(("2권", index_3, meta_3))
+        loaded.append(("2권", index_3, meta_chunks_3))
     if os.path.exists(IDX_FILE_4) and os.path.exists(META_FILE_4):
         index_4 = faiss.read_index(IDX_FILE_4)
-        with open(META_FILE_4, "rb") as f:
-            meta_4 = pickle.load(f)
-        loaded.append(("4권", index_4, meta_4))
+        loaded.append(("4권", index_4, meta_chunks_4))
     if not loaded:
         raise FileNotFoundError("인덱스 파일이 존재하지 않습니다.")
     return loaded
@@ -345,7 +322,6 @@ def find_in_pages(q_type):
     keywords_list = extract_nouns(q_type)
     n = len(keywords_list)
     answer_lines = []
-    used_phrases = set()
     shown_phrases = set()  # 이미 표시한 표기(대표 표기, 붙여쓰기/띄어쓰기 모두)
 
     # 2개 이상 단어면 복합어 우선!
@@ -386,14 +362,8 @@ def find_in_pages(q_type):
 #===================================================================================
 def find_pseudocode_sections(q_type):
     keywords = extract_keywords(q_type)
-    print(f"keywords: {keywords}")
-
     concept_keywords = [k for k in keywords if not is_pseudocode_keyword(k)]
-    print(f"concept_keywords: {concept_keywords}")
-
     phrase = " ".join(concept_keywords)
-    print(f"phrase: {phrase}")
-
     matched_sections = []
 
     for label, meta_keywords in SECTION_VOLUME_LIST:
@@ -478,7 +448,6 @@ def is_pseudocode(query: str, threshold=0.6) -> str | bool:
     normalized_query = query.lower().replace("pseudo", "슈도").replace("code", "코드")
 
     candidates = normalized_query.split(" ")
-    print(f"$$${candidates}")
     for i in range(len(candidates)):
         for j in range(i + 1, min(len(candidates), i + 2)):
             phrase = " ".join(candidates[i:j+1])
@@ -488,12 +457,9 @@ def is_pseudocode(query: str, threshold=0.6) -> str | bool:
                 vec = get_embedding_cached(phrase)  # ✅ 캐시 사용
 
                 sim = cosine_similarity(vec, target_vec)
-                print(f"유사도({phrase} vs 슈도 코드): {sim:.3f}")
                 if sim >= threshold:
-                    print(target)
                     return target
             except Exception as e:
-                print(f"⚠️ 임베딩 오류: {e}")
                 continue
 
     return False
@@ -503,12 +469,10 @@ def is_pseudocode_keyword(word: str, threshold=0.4) -> bool:
     # 임베딩 유사도 기반으로 판별
     target = "슈도코드"
     word = word.lower().replace("pseudo", "슈도").replace("code", "코드")
-    print(f"word: {word}")
     target_vec = get_embedding(target)
     word_vec = get_embedding(word)
 
     sim = cosine_similarity(word_vec, target_vec)
-    print(f"sim: {sim}")
     return sim >= threshold
 
 #===================================================================================
@@ -545,30 +509,21 @@ def count_tokens(text):
     return len(enc.encode(text))
 
 # 새 질문 처리
-def _today_key_for_ip(ip: str) -> str:
-    today = datetime.now().strftime("%Y-%m-%d")
-    safe_ip = _normalize_ip(ip) or "unknown"
-    return f"tokens:{safe_ip}:{today}"
-
-def handle_question(prompt, ip: str):
-    # ip가 아직 못 잡혔을 수도 있으니 가드
-    if not ip:
-        return "IP 확인 중입니다. 잠시 후 다시 시도해주세요."
-
-    key = _today_key_for_ip(ip)
+def handle_question(prompt):
     prompt_tokens = count_tokens(prompt)
     current = int(r.get(key) or 0)
 
     if current + prompt_tokens > TOKEN_LIMIT:
         return "오늘의 토큰 사용량을 초과했습니다. 내일 다시 질문해주세요."
 
+    # 토큰 증가
     r.incrby(key, prompt_tokens)
     return "질문 처리 완료"
 
-def get_token_usage_for_ip(ip: str):
-    if not ip:
-        return 0
-    key = _today_key_for_ip(ip)
+# 토큰 사용량 확인
+def get_token_usage(user_id):
+    today = datetime.now().strftime("%Y-%m-%d")
+    key = f"tokens:{user_id}:{today}"
     return int(r.get(key) or 0)
 
 #===================================================================================
@@ -586,16 +541,12 @@ def get_embedding_cached(text):
 # Streamlit UI
 #===================================================================================
 CHUNKS_VOLUME_LIST = build_or_load()
+today = datetime.now().strftime("%Y-%m-%d")
+key = f"tokens:{USER_ID}:{today}"
 
-st.set_page_config(page_title="chatbot_250807_mix_redis")
-st.title("🖥️ chatbot_250807_mix_redis")
+st.set_page_config(page_title="LYDUS Chatbot")
+st.title("🖥️ LYDUS Chatbot")
 st.error("이 챗봇은 참고용으로 제공되며, 중요한 내용은 반드시 공식 가이드라인을 확인하세요.")
-
-client_ip = get_client_ip()
-if client_ip:
-    st.caption(f"현재 접속 IP: {client_ip}")
-else:
-    st.caption("현재 접속 IP 확인 중…(브라우저에서 ipify 호출)")
 
 # 세션 간 데이터를 저장하고 유지하기 위한 초기화 코드
 if "history" not in st.session_state:
@@ -608,9 +559,9 @@ for h in st.session_state.history:
 
 # 새 질문 입력받기
 if prompt := st.chat_input("가이드라인에 대해 질문하세요…"):
-    # 토큰(IP 기준)
-    result = handle_question(prompt, client_ip)
-    usage = get_token_usage_for_ip(client_ip)
+    # 토큰
+    result = handle_question(prompt)
+    usage = get_token_usage(USER_ID)
     st.markdown(f"오늘 사용한 토큰 수: **{usage} / {TOKEN_LIMIT}**")
 
     # 3. user 질문 즉시 출력
@@ -618,13 +569,11 @@ if prompt := st.chat_input("가이드라인에 대해 질문하세요…"):
     st.session_state.history.append({"role": "user", "content": prompt})
 
     with st.chat_message("assistant"):
-        if ("토큰 사용량을 초과" in result) or ("IP 확인 중" in result):
+        if "토큰 사용량을 초과" in result:
             st.markdown(f"{result}")
             st.stop()
 
         question = classify_question(prompt)
-        print(f"1) question: {question}")
-
         if question == "other":
             full_response = ""
             for chunk in rag_chat_multi_volume(prompt, st.session_state.history):
@@ -652,7 +601,6 @@ if prompt := st.chat_input("가이드라인에 대해 질문하세요…"):
 
         # 위치, 슈도코드를 물어보는 경우
         answer = query_by_question_subject_location_pseudo(prompt, question)
-        print(f"2) answer: {answer}")
         if answer:
             display_with_latex(answer)
             st.session_state.history.append({
