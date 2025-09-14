@@ -10,3 +10,4 @@ numpy==1.26.4
 python-dotenv==1.0.1
 faiss-cpu==1.7.4
 redis==5.0.7
+streamlit_js_eval==0.1.7
