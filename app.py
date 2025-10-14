@@ -8,7 +8,7 @@ from openai import OpenAI
 import re
 from numpy.linalg import norm
 import redis
-from streamlit_js_eval import streamlit_js_eval
+import socket
 
 #===================================================================================
 # ip별 token 제한
@@ -19,22 +19,15 @@ def _normalize_ip(ip: str) -> str:
 
 def get_client_ip() -> str:
     """
-    브라우저에서 직접 공인 IP를 조회. 실패 시 빈 문자열 반환.
+    서버(파이썬 실행 머신)의 내부 IP를 조회. 실패 시 빈 문자열 반환.
     """
     try:
-        ip = streamlit_js_eval(
-            js_expressions="""
-              (async () => {
-                try {
-                  const r = await fetch('https://api64.ipify.org?format=json');
-                  const j = await r.json();
-                  return j.ip || '';
-                } catch(e) { return ''; }
-              })()
-            """,
-            key="get_ip_js_eval",
-            want_output=True,
-        )
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            s.connect(("8.8.8.8", 80))   # 외부로 나가며 바인딩된 NIC IP 확인
+            ip = s.getsockname()[0]
+        finally:
+            s.close()
         return _normalize_ip(ip) if isinstance(ip, str) else ""
     except Exception:
         return ""
