@@ -588,7 +588,7 @@ def get_embedding_cached(text):
 CHUNKS_VOLUME_LIST = build_or_load()
 
 st.set_page_config(page_title="chatbot")
-st.image("img/logo.png", width=200)
+st.image("img/logo.png", width=170)
 st.error("이 챗봇은 참고용으로 제공되며, 중요한 내용은 반드시 공식 가이드라인을 확인하세요.")
 
 client_ip = get_client_ip()
