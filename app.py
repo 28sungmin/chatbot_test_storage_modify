@@ -9,6 +9,7 @@ import re
 from numpy.linalg import norm
 import redis
 from streamlit_js_eval import streamlit_js_eval
+import hashlib
 
 #===================================================================================
 # ip별 token 제한
@@ -18,24 +19,31 @@ def _normalize_ip(ip: str) -> str:
     return re.sub(r'[^0-9a-zA-Z\.\-_:]', '_', ip or "")
 
 def get_client_ip() -> str:
-    """
-    브라우저에서 직접 공인 IP를 조회. 실패 시 빈 문자열 반환.
-    """
+    """User-Agent + IP 기반 간이 식별자 생성"""
     try:
-        ip = streamlit_js_eval(
+        # JS에서 userAgent, ip 가져오기
+        info = streamlit_js_eval(
             js_expressions="""
               (async () => {
-                try {
-                  const r = await fetch('https://api64.ipify.org?format=json');
-                  const j = await r.json();
-                  return j.ip || '';
-                } catch(e) { return ''; }
+                const ipRes = await fetch('https://api64.ipify.org?format=json');
+                const ipJson = await ipRes.json();
+                return {
+                  ip: ipJson.ip || '',
+                  ua: navigator.userAgent || ''
+                };
               })()
             """,
-            key="get_ip_js_eval",
+            key="ua_ip_eval",
             want_output=True,
         )
-        return _normalize_ip(ip) if isinstance(ip, str) else ""
+        if not info or not isinstance(info, dict):
+            return ""
+
+        ip = info.get("ip", "")
+        ua = info.get("ua", "")
+        raw = f"{ip}_{ua}"
+        fingerprint = hashlib.sha256(raw.encode()).hexdigest()[:16]  # 짧게 줄이기
+        return fingerprint
     except Exception:
         return ""
 
