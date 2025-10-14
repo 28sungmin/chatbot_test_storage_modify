@@ -39,8 +39,6 @@ def get_client_ip() -> str:
     except Exception:
         return ""
 
-client_ip = get_client_ip()
-
 #===================================================================================
 # 설정
 #===================================================================================
@@ -640,6 +638,7 @@ st.set_page_config(page_title="chatbot")
 st.image("img/logo.png", width=170)
 st.error("이 챗봇은 참고용으로 제공되며, 중요한 내용은 반드시 공식 가이드라인을 확인하세요.")
 
+client_ip = get_client_ip()
 if client_ip:
     st.caption(f"현재 접속 IP: {client_ip}")
     st.session_state["client_ip"] = client_ip   # IP를 세션에 심기
