@@ -1,4 +1,4 @@
-import os, pickle, numpy as np
+import os, json, pickle, numpy as np
 from datetime import datetime
 import tiktoken
 from dotenv import load_dotenv, find_dotenv
@@ -39,6 +39,8 @@ def get_client_ip() -> str:
     except Exception:
         return ""
 
+client_ip = get_client_ip()
+
 #===================================================================================
 # 설정
 #===================================================================================
@@ -62,6 +64,13 @@ r = redis.Redis(
     username="default",
     password=redis_password,
 )
+
+# Redis 연결 확인
+try:
+    r.ping()
+except Exception as e:
+    st.error(f"❌ Redis 연결 실패: {e}")
+
 STOPWORDS = ["알려", "수", "있어", "어디", "나오", "는지", "에서", "으로", "하고", "가이드라인", '확인', '확인하고', '싶어', '페이지', '어느', '부분']
 TOKEN_LIMIT = 277000
 
@@ -583,6 +592,46 @@ def get_embedding_cached(text):
     return emb
 
 #===================================================================================
+# IP주소별로 Redis에 질문과 답변 저장
+#===================================================================================
+# TTL 설정: 30분 동안 대화 없으면 삭제
+TTL = int(os.getenv("CHAT_TTL_SECONDS", "1800"))  # 기본 1800초 (30분)
+CHAT_TTL_SECONDS = TTL
+
+# 키 안전화(유틸): 키에 안전한 문자열로 정규화
+def _normalize(s: str) -> str:
+    return re.sub(r"[^0-9a-zA-Z\.\-_:]", "_", s or "anon")
+
+# IP 기준 세션 키
+def get_ip_id() -> str:
+    ip = st.session_state.get("client_ip")
+    if not ip:
+        # 마지막 안전장치: 없으면 anon (여러 사용자가 섞일 수 있음)
+        return "anon"
+    return f"ip:{_normalize(ip)}"
+
+# 이 사용자의 IP 주소를 기반으로 한 Redis 키 이름을 만들기
+def chat_key_by_ip() -> str:
+    return f"chat:{get_ip_id()}"
+
+# 채팅 로드/저장
+def load_chat(max_messages: int = 100) -> list[dict]:
+    key = chat_key_by_ip()
+    msgs = r.lrange(key, -max_messages, -1) or []
+    return [json.loads(m) for m in msgs]
+
+def append_message(role: str, content: str,
+                   ttl_seconds: int = CHAT_TTL_SECONDS, max_messages: int = 200):
+    key = chat_key_by_ip()
+    msg = {"role": role, "content": content,
+           "ts": datetime.utcnow().isoformat(timespec="seconds") + "Z"}
+    p = r.pipeline()
+    p.rpush(key, json.dumps(msg))
+    p.ltrim(key, -max_messages, -1)  # 최근 max_messages만 유지
+    p.expire(key, ttl_seconds)       # 슬라이딩 TTL: 활동마다 연장
+    p.execute()
+
+#===================================================================================
 # Streamlit UI
 #===================================================================================
 CHUNKS_VOLUME_LIST = build_or_load()
@@ -591,18 +640,18 @@ st.set_page_config(page_title="chatbot")
 st.image("img/logo.png", width=170)
 st.error("이 챗봇은 참고용으로 제공되며, 중요한 내용은 반드시 공식 가이드라인을 확인하세요.")
 
-client_ip = get_client_ip()
 if client_ip:
     st.caption(f"현재 접속 IP: {client_ip}")
+    st.session_state["client_ip"] = client_ip   # IP를 세션에 심기
 else:
     st.caption("현재 접속 IP 확인 중…(브라우저에서 ipify 호출)")
 
-# 세션 간 데이터를 저장하고 유지하기 위한 초기화 코드
-if "history" not in st.session_state:
-    st.session_state.history = []
+# # 세션 간 데이터를 저장하고 유지하기 위한 초기화 코드
+# if "history" not in st.session_state:
+#     st.session_state.history = []
 
-# 과거 대화 전체 출력
-for h in st.session_state.history:
+# 과거 대화 전체 출력 (Redis에서 로드)
+for h in load_chat():
     with st.chat_message(h["role"]):
         display_with_latex(h["content"])
 
@@ -615,7 +664,7 @@ if prompt := st.chat_input("가이드라인에 대해 질문하세요…"):
 
     # 3. user 질문 즉시 출력
     st.chat_message("user").markdown(prompt)
-    st.session_state.history.append({"role": "user", "content": prompt})
+    append_message("user", prompt)
 
     with st.chat_message("assistant"):
         if ("토큰 사용량을 초과" in result) or ("IP 확인 중" in result):
@@ -627,13 +676,13 @@ if prompt := st.chat_input("가이드라인에 대해 질문하세요…"):
 
         if question == "other":
             full_response = ""
-            for chunk in rag_chat_multi_volume(prompt, st.session_state.history):
+            for chunk in rag_chat_multi_volume(prompt, load_chat()):
                 delta = chunk.choices[0].delta.content or ""
                 full_response += delta
 
             if is_insufficient_answer(full_response):
                 full_response = ""
-                for chunk in rag_chat_multi_volume(prompt, st.session_state.history, model=CHAT_MODEL_GENERAL):
+                for chunk in rag_chat_multi_volume(prompt, load_chat(), model=CHAT_MODEL_GENERAL):
                     delta = chunk.choices[0].delta.content or ""
                     full_response += delta
                 if not contains_model_tag(full_response, CHAT_MODEL_GENERAL):
@@ -643,11 +692,7 @@ if prompt := st.chat_input("가이드라인에 대해 질문하세요…"):
                     full_response += f"\n\n**{CHAT_MODEL_MINI}**로 답변"
 
             display_with_latex(full_response)
-            st.session_state.history.append({
-                "role": "assistant",
-                "content": full_response
-            })
-
+            append_message("assistant", full_response)
             st.stop()
 
         # 위치, 슈도코드를 물어보는 경우
@@ -655,8 +700,5 @@ if prompt := st.chat_input("가이드라인에 대해 질문하세요…"):
         print(f"2) answer: {answer}")
         if answer:
             display_with_latex(answer)
-            st.session_state.history.append({
-                "role": "assistant",
-                "content": answer
-            })
+            append_message("assistant", answer)
             st.stop()
