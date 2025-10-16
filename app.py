@@ -1,5 +1,5 @@
 import os, json, pickle, numpy as np
-from datetime import datetime
+from datetime import datetime, timedelta
 import tiktoken
 from dotenv import load_dotenv, find_dotenv
 import streamlit as st
@@ -10,6 +10,7 @@ from numpy.linalg import norm
 import redis
 from streamlit_js_eval import streamlit_js_eval
 import hashlib
+from typing import Tuple, Dict, Any
 
 #===================================================================================
 # ip별 token 제한
@@ -18,34 +19,72 @@ def _normalize_ip(ip: str) -> str:
     # Redis 키에 안전하도록 특수문자 정리
     return re.sub(r'[^0-9a-zA-Z\.\-_:]', '_', ip or "")
 
-def get_client_ip() -> str:
-    """User-Agent + IP 기반 간이 식별자 생성"""
-    try:
-        # JS에서 userAgent, ip 가져오기
-        info = streamlit_js_eval(
-            js_expressions="""
-              (async () => {
-                const ipRes = await fetch('https://api64.ipify.org?format=json');
-                const ipJson = await ipRes.json();
-                return {
-                  ip: ipJson.ip || '',
-                  ua: navigator.userAgent || ''
-                };
-              })()
-            """,
-            key="ua_ip_eval",
-            want_output=True,
-        )
-        if not info or not isinstance(info, dict):
-            return ""
+# 선택사항: 서버측 솔트 (환경변수로 설정 권장)
+FP_SALT = os.getenv("FP_SALT", "please-change-this-salt")
 
-        ip = info.get("ip", "")
-        ua = info.get("ua", "")
-        raw = f"{ip}_{ua}"
-        fingerprint = hashlib.sha256(raw.encode()).hexdigest()[:16]  # 짧게 줄이기
-        return fingerprint
+def get_simple_fingerprint() -> Tuple[str, Dict[str, Any]]:
+    """
+    브라우저에서 (1) persist_id (localStorage) (2) public IP (ipify) (3) navigator.userAgent
+    를 가져와서 간단한 fingerprint를 생성하고 (fp, info) 형태로 반환합니다.
+
+    반환:
+      - fp: 24자 길이의 hex 문자열 (빈 문자열이면 실패)
+      - info: 수집된 원본 정보 딕셔너리 (pid, ip, ua)
+    """
+    # JS: persist_id 생성/읽기 + ipify 호출 + userAgent 수집
+    js = r"""
+    (async () => {
+      try {
+        // 1) persist_id (localStorage)
+        let pid = localStorage.getItem("persist_id");
+        if (!pid) {
+          // crypto.randomUUID() 지원 안 되면 fallback
+          pid = (typeof crypto?.randomUUID === "function") ? crypto.randomUUID() : ('p_' + Math.random().toString(36).slice(2,12));
+          localStorage.setItem("persist_id", pid);
+        }
+
+        // 2) public IP (ipify)
+        let ip = "";
+        try {
+          const res = await fetch('https://api64.ipify.org?format=json');
+          const j = await res.json();
+          ip = j?.ip || "";
+        } catch(e) {
+          ip = "";
+        }
+
+        // 3) userAgent
+        const ua = navigator.userAgent || "";
+
+        return { pid, ip, ua };
+      } catch (e) {
+        return { pid: "", ip: "", ua: "" };
+      }
+    })()
+    """
+
+    try:
+        info = streamlit_js_eval(js_expressions=js, key="simple_fp_collect", want_output=True) or {}
     except Exception:
-        return ""
+        # streamlit_js_eval 호출 실패 시 기본값
+        info = {"pid": "", "ip": "", "ua": ""}
+
+    # 보정: 타입 안정성 유지
+    pid = str(info.get("pid", "") or "")
+    ip  = str(info.get("ip", "") or "")
+    ua  = str(info.get("ua", "") or "")
+
+    info_clean: Dict[str, Any] = {"pid": pid, "ip": ip, "ua": ua}
+
+    # fingerprint 원문 (순서 고정) + 서버 솔트 포함
+    raw = "|".join([pid, ip, ua, FP_SALT])
+    fp = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:24]
+
+    # 빈값 체크: pid가 전혀 없고 ip도 없으면 실패로 간주할 수 있음
+    if not (pid or ip or ua):
+        return "", info_clean
+
+    return fp, info_clean
 
 #===================================================================================
 # 설정
@@ -556,8 +595,17 @@ def contains_model_tag(text, model):
 #===================================================================================
 # 토큰 계산
 def count_tokens(text):
-    enc = tiktoken.encoding_for_model("gpt-3.5-turbo")
-    return len(enc.encode(text))
+    try:
+        enc = tiktoken.encoding_for_model("gpt-3.5-turbo")
+    except Exception:
+        enc = tiktoken.get_encoding("cl100k_base")
+    return len(enc.encode(text or ""))
+
+def _secs_until_utc_midnight() -> int:
+    now = datetime.utcnow()
+    tomorrow = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+    return int((tomorrow - now).total_seconds())
+
 
 # 새 질문 처리
 def _today_key_for_ip(ip: str) -> str:
@@ -577,7 +625,12 @@ def handle_question(prompt, ip: str):
     if current + prompt_tokens > TOKEN_LIMIT:
         return "오늘의 토큰 사용량을 초과했습니다. 내일 다시 질문해주세요."
 
-    r.incrby(key, prompt_tokens)
+    # 토큰 증가 + 오늘 자정(UTC)까지 TTL 설정
+    ttl = _secs_until_utc_midnight()
+    pipe = r.pipeline()
+    pipe.incrby(key, prompt_tokens)
+    pipe.expire(key, ttl)  # 매 호출마다 갱신해서 누락된 키도 정리
+    pipe.execute()
     return "질문 처리 완료"
 
 def get_token_usage_for_ip(ip: str):
@@ -617,25 +670,24 @@ def get_ip_id() -> str:
     return f"ip:{_normalize(ip)}"
 
 # 이 사용자의 IP 주소를 기반으로 한 Redis 키 이름을 만들기
-def chat_key_by_ip() -> str:
-    return f"chat:{get_ip_id()}"
+def chat_key_by_fp(fp: str) -> str:
+    """fingerprint별 Redis 채팅 키"""
+    return f"chat:{fp}"
 
 # 채팅 로드/저장
-def load_chat(max_messages: int = 100) -> list[dict]:
-    key = chat_key_by_ip()
+def load_chat(fp: str, max_messages: int = 100) -> list[dict]:
+    """
+    fingerprint별 대화 내역을 Redis에서 불러옴.
+    """
+    key = chat_key_by_fp(fp)
     msgs = r.lrange(key, -max_messages, -1) or []
     return [json.loads(m) for m in msgs]
 
-def append_message(role: str, content: str,
-                   ttl_seconds: int = CHAT_TTL_SECONDS, max_messages: int = 200):
-    key = chat_key_by_ip()
-    msg = {"role": role, "content": content,
-           "ts": datetime.utcnow().isoformat(timespec="seconds") + "Z"}
-    p = r.pipeline()
-    p.rpush(key, json.dumps(msg))
-    p.ltrim(key, -max_messages, -1)  # 최근 max_messages만 유지
-    p.expire(key, ttl_seconds)       # 슬라이딩 TTL: 활동마다 연장
-    p.execute()
+def append_message(role: str, content: str, fp: str):
+    """Redis에 메시지를 추가"""
+    key = chat_key_by_fp(fp)
+    r.rpush(key, json.dumps({"role": role, "content": content}))
+    r.expire(key, CHAT_TTL_SECONDS)
 
 #===================================================================================
 # Streamlit UI
@@ -646,32 +698,32 @@ st.set_page_config(page_title="chatbot")
 st.image("img/logo.png", width=170)
 st.error("이 챗봇은 참고용으로 제공되며, 중요한 내용은 반드시 공식 가이드라인을 확인하세요.")
 
-client_ip = get_client_ip()
-if client_ip:
-    st.caption(f"현재 접속 IP: {client_ip}")
-    st.session_state["client_ip"] = client_ip   # IP를 세션에 심기
-else:
-    st.caption("현재 접속 IP 확인 중…(브라우저에서 ipify 호출)")
+# fingerprint 생성 (IP + UA + persist_id)
+fp, info = get_simple_fingerprint()   # ← 기존 get_client_ip() 대신 사용
 
-# # 세션 간 데이터를 저장하고 유지하기 위한 초기화 코드
-# if "history" not in st.session_state:
-#     st.session_state.history = []
+if fp:
+    st.caption(f"ID: {fp[-6:]}")
+    st.session_state["fingerprint"] = fp
+    st.session_state["client_info"] = info
+else:
+    st.caption("현재 ID 생성 중…(브라우저 정보 확인)")
+    st.stop()
 
 # 과거 대화 전체 출력 (Redis에서 로드)
-for h in load_chat():
+for h in load_chat(fp):
     with st.chat_message(h["role"]):
         display_with_latex(h["content"])
 
 # 새 질문 입력받기
 if prompt := st.chat_input("가이드라인에 대해 질문하세요…"):
     # 토큰(IP 기준)
-    result = handle_question(prompt, client_ip)
-    usage = get_token_usage_for_ip(client_ip)
+    result = handle_question(prompt, fp)
+    usage = get_token_usage_for_ip(fp)
     st.markdown(f"오늘 사용한 토큰 수: **{usage} / {TOKEN_LIMIT}**")
 
     # 3. user 질문 즉시 출력
     st.chat_message("user").markdown(prompt)
-    append_message("user", prompt)
+    append_message("user", prompt, fp)
 
     with st.chat_message("assistant"):
         if ("토큰 사용량을 초과" in result) or ("IP 확인 중" in result):
@@ -683,13 +735,13 @@ if prompt := st.chat_input("가이드라인에 대해 질문하세요…"):
 
         if question == "other":
             full_response = ""
-            for chunk in rag_chat_multi_volume(prompt, load_chat()):
+            for chunk in rag_chat_multi_volume(prompt, load_chat(fp)):
                 delta = chunk.choices[0].delta.content or ""
                 full_response += delta
 
             if is_insufficient_answer(full_response):
                 full_response = ""
-                for chunk in rag_chat_multi_volume(prompt, load_chat(), model=CHAT_MODEL_GENERAL):
+                for chunk in rag_chat_multi_volume(prompt, load_chat(fp), model=CHAT_MODEL_GENERAL):
                     delta = chunk.choices[0].delta.content or ""
                     full_response += delta
                 if not contains_model_tag(full_response, CHAT_MODEL_GENERAL):
@@ -699,7 +751,7 @@ if prompt := st.chat_input("가이드라인에 대해 질문하세요…"):
                     full_response += f"\n\n**{CHAT_MODEL_MINI}**로 답변"
 
             display_with_latex(full_response)
-            append_message("assistant", full_response)
+            append_message("assistant", full_response, fp)
             st.stop()
 
         # 위치, 슈도코드를 물어보는 경우
@@ -707,5 +759,5 @@ if prompt := st.chat_input("가이드라인에 대해 질문하세요…"):
         print(f"2) answer: {answer}")
         if answer:
             display_with_latex(answer)
-            append_message("assistant", answer)
+            append_message("assistant", answer, fp)
             st.stop()
