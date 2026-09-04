@@ -6,11 +6,11 @@ import streamlit as st
 import faiss
 from openai import OpenAI
 import re
-from numpy.linalg import norm
 import redis
 from streamlit_js_eval import streamlit_js_eval
 import hashlib
 from typing import Tuple, Dict, Any
+from kiwipiepy import Kiwi
 
 #===================================================================================
 # 기본 설정
@@ -30,7 +30,6 @@ redis_password = os.environ.get("REDIS_PASSWORD")
 EMBED_MODEL     = "text-embedding-3-small"
 CHAT_MODEL_GENERAL      = "gpt-4.1"
 CHAT_MODEL_MINI      = "gpt-4o-mini"
-TOP_K           = 4
 r = redis.Redis(
     host=redis_host,
     port=redis_port,
@@ -50,72 +49,80 @@ except Exception as e:
 # 1권
 IDX_FILE_1        = "data/book1_faiss_chunk_250804.index"
 META_FILE_1       = "data/book1_meta_chunk_250804.pkl"
-SECTION_IDX_FILE_1 = "data/book1_faiss_section_keywords_250804.index"
 SECTION_META_FILE_1 = "data/book1_meta_section_keywords_250804.pkl"
-PAGE_IDX_FILE_1 = "data/book1_faiss_page_250804.index"
 PAGE_META_FILE_1 = "data/book1_meta_page_250804.pkl"
 # 2권
 IDX_FILE_2        = "data/book2_faiss_chunk_250804.index"
 META_FILE_2       = "data/book2_meta_chunk_250804.pkl"
-SECTION_IDX_FILE_2 = "data/book2_faiss_section_keywords_250804.index"
 SECTION_META_FILE_2 = "data/book2_meta_section_keywords_250804.pkl"
-PAGE_IDX_FILE_2 = "data/book2_faiss_page_250804.index"
 PAGE_META_FILE_2 = "data/book2_meta_page_250804.pkl"
 # 3권
 IDX_FILE_3        = "data/book3_faiss_chunk_250801.index"
 META_FILE_3       = "data/book3_meta_chunk_250801.pkl"
-SECTION_IDX_FILE_3 = "data/book3_faiss_section_keywords_250801.index"
 SECTION_META_FILE_3 = "data/book3_meta_section_keywords_250801.pkl"
-PAGE_IDX_FILE_3 = "data/book3_faiss_page_250801.index"
 PAGE_META_FILE_3 = "data/book3_meta_page_250801.pkl"
 # 4권
 IDX_FILE_4        = "data/book4_faiss_chunk_table_250808.index"
 META_FILE_4       = "data/book4_meta_chunk_table_250808.pkl"
-SECTION_IDX_FILE_4 = "data/book4_faiss_section_keywords_250808.index"
 SECTION_META_FILE_4 = "data/book4_meta_section_keywords_250808.pkl"
-PAGE_IDX_FILE_4 = "data/book4_faiss_page_250808.index"
 PAGE_META_FILE_4 = "data/book4_meta_page_250808.pkl"
+# 5권
+IDX_FILE_5        = "data/book5_faiss_chunk_260901.index"
+META_FILE_5       = "data/book5_meta_chunk_260901.pkl"
+SECTION_META_FILE_5 = "data/book5_meta_section_keywords_260904.pkl"
+PAGE_META_FILE_5 = "data/book5_meta_page_260904.pkl"
+# 6권
+IDX_FILE_6        = "data/book6_faiss_chunk_260904.index"
+META_FILE_6       = "data/book6_meta_chunk_260904.pkl"
+SECTION_META_FILE_6 = "data/book6_meta_section_keywords_260904.pkl"
+PAGE_META_FILE_6 = "data/book6_meta_page_260904.pkl"
 
 with open(PAGE_META_FILE_1, "rb") as f:
     meta_pages_1 = pickle.load(f)
 with open(SECTION_META_FILE_1, "rb") as f:
     meta_keywords_1 = pickle.load(f)
-with open(META_FILE_1, "rb") as f:
-    meta_chunks_1 = pickle.load(f)
 
 with open(PAGE_META_FILE_2, "rb") as f:
     meta_pages_2 = pickle.load(f)
 with open(SECTION_META_FILE_2, "rb") as f:
     meta_keywords_2 = pickle.load(f)
-with open(META_FILE_2, "rb") as f:
-    meta_chunks_2 = pickle.load(f)
 
 with open(PAGE_META_FILE_3, "rb") as f:
     meta_pages_3 = pickle.load(f)
 with open(SECTION_META_FILE_3, "rb") as f:
     meta_keywords_3 = pickle.load(f)
-with open(META_FILE_3, "rb") as f:
-    meta_chunks_3 = pickle.load(f)
 
 with open(PAGE_META_FILE_4, "rb") as f:
     meta_pages_4 = pickle.load(f)
 with open(SECTION_META_FILE_4, "rb") as f:
     meta_keywords_4 = pickle.load(f)
-with open(META_FILE_4, "rb") as f:
-    meta_chunks_4 = pickle.load(f)
 
-PAGE_VOLUME_LIST = [("1권", meta_pages_1), ("2권", meta_pages_2), ("3권", meta_pages_3), ("4권", meta_pages_4)]
+with open(PAGE_META_FILE_5, "rb") as f:
+    meta_pages_5 = pickle.load(f)
+with open(SECTION_META_FILE_5, "rb") as f:
+    meta_keywords_5 = pickle.load(f)
+
+with open(PAGE_META_FILE_6, "rb") as f:
+    meta_pages_6 = pickle.load(f)
+with open(SECTION_META_FILE_6, "rb") as f:
+    meta_keywords_6 = pickle.load(f)
+
+PAGE_VOLUME_LIST = [("1권", meta_pages_1), ("2권", meta_pages_2), ("3권", meta_pages_3), ("4권", meta_pages_4), ("5권", meta_pages_5), ("6권", meta_pages_6)]
 SECTION_VOLUME_LIST = [
     ("1권", meta_keywords_1),
     ("2권", meta_keywords_2),
     ("3권", meta_keywords_3),
     ("4권", meta_keywords_4),
+    ("5권", meta_keywords_5),
+    ("6권", meta_keywords_6),
 ]
 
 #---------------------
 # 불용어 & 토큰 수 제한
 #---------------------
-STOPWORDS = ["알려", "수", "있어", "어디", "나오", "는지", "에서", "으로", "하고", "가이드라인", '확인', '확인하고', '싶어', '페이지', '어느', '부분', '데이터']
+# 조사/어미/대명사/동사는 형태소 분석기가 품사로 걸러내므로 여기 넣을 필요가 없다.
+# 질문 자체를 가리키는 "메타 명사"만 남긴다.
+STOPWORDS = ["가이드라인", "페이지", "부분", "내용", "위치", "설명", "확인", "질문", "관련"]
 TOKEN_LIMIT = 277000
 
 #===================================================================================
@@ -140,12 +147,22 @@ def build_or_load():
         index_3 = faiss.read_index(IDX_FILE_3)
         with open(META_FILE_3, "rb") as f:
             meta_3 = pickle.load(f)
-        loaded.append(("2권", index_3, meta_3))
+        loaded.append(("3권", index_3, meta_3))
     if os.path.exists(IDX_FILE_4) and os.path.exists(META_FILE_4):
         index_4 = faiss.read_index(IDX_FILE_4)
         with open(META_FILE_4, "rb") as f:
             meta_4 = pickle.load(f)
         loaded.append(("4권", index_4, meta_4))
+    if os.path.exists(IDX_FILE_5) and os.path.exists(META_FILE_5):
+        index_5 = faiss.read_index(IDX_FILE_5)
+        with open(META_FILE_5, "rb") as f:
+            meta_5 = pickle.load(f)
+        loaded.append(("5권", index_5, meta_5))
+    if os.path.exists(IDX_FILE_6) and os.path.exists(META_FILE_6):
+        index_6 = faiss.read_index(IDX_FILE_6)
+        with open(META_FILE_6, "rb") as f:
+            meta_6 = pickle.load(f)
+        loaded.append(("6권", index_6, meta_6))
     if not loaded:
         raise FileNotFoundError("인덱스 파일이 존재하지 않습니다.")
     return loaded
@@ -160,127 +177,72 @@ def _embed_text(texts):
 #===================================================================================
 # 위치 / 코드 / 내용 질문 구분
 #===================================================================================
+QUESTION_TYPES = ("code", "location", "other")
+
+QUESTION_TYPE_TTL = int(os.getenv("QUESTION_TYPE_TTL_SECONDS", "86400"))  # 분류 결과 캐시 (기본 1일)
+
+#--------------------------------------------------------
+# gpt-4o-mini로 code / location / other 중 하나로 분류하는 함수
+#
+# 키워드로 미리 걸러내지 않는다. "어디"는 위치(어디에 나와)뿐 아니라
+# 용도(어디에 쓰여), 원인(어디서 발생해), 순서(어디부터 읽어)로도 쓰이고,
+# "슈도코드"도 정의를 묻는 질문일 수 있어서 문맥 없이는 판단할 수 없다.
+#--------------------------------------------------------
 def classify_question(question):
-    # 1. 코드/구현 관련 질문인가?
-    if is_code_question(question) or is_location_or_code_question_llm(question) == "YES":
-        return "code"
-    # 2. 위치 관련 질문인가?
-    if is_location_question(question) or is_location_or_code_question_llm(question) == "NO":
-        return "location"
-    # 4. 그 외 (임베딩 검색 등)
-    return "other"
+    cached = get_cached_question_type(question)
+    if cached:
+        return cached
 
-#---------------------
-# 코드 질문인지 확인
-#---------------------
-def is_code_question(question):
-    # 1차: 단순 키워드 체크
-    keywords = ["슈도코드", "코드", "구현"]
-    if any(k in question for k in keywords):
-        return True
-    # 2차: 다양한 표기(띄어쓰기, 영어, 오타 등) 커버
-    if is_pseudocode(question):
-        return True
-    return False
-
-#---------------------
-# 위치 질문인지 확인
-#---------------------
-def is_location_question(question):
-    keywords = ["어디", "절", "위치", "나와", "포함", "섹션", "부분", "들어있", "언급", "포함된", "수록"]
-    return any(k in question for k in keywords)
-
-#-------------------------------------
-# gpt-4o-mini로 위치인지 코드 질문인지 판단
-#-------------------------------------
-def is_location_or_code_question_llm(question):
     prompt = (
-        'If the following question is about code, pseudocode, or implementation, answer YES.'
-        'or about the location of content '
-        '(such as which section, part, where, included, mentioned, etc.) answer NO.\n\n'
-        f'Q: {question}\n'
+        "Classify the user's question about a guideline book into exactly one label.\n"
+        "code     - the question mentions code or pseudocode in ANY way "
+        "(asking for it, or asking where it is). This rule wins over the others.\n"
+        "location - asks which page or section a topic appears on.\n"
+        "other    - anything else: what it means, why, how to do it, "
+        "where it is used, where it comes from, comparison.\n"
+        "Answer with the label only.\n\n"
+        f"Q: {question}\n"
+        "Label:"
     )
-    response = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0,
-        max_tokens=3,
-    )
-    answer = response.choices[0].message.content.strip().upper()
-    return answer == "YES"
+    try:
+        response = client.chat.completions.create(
+            model=CHAT_MODEL_MINI,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0,
+            max_tokens=3,
+        )
+        label = response.choices[0].message.content.strip().lower()
+    except Exception as e:
+        print(f"⚠️ 질문 분류 실패: {e}")
+        return "other"
 
-#===================================================================================
-# 임베딩 관련 함수
-#===================================================================================
-#-----------------------------------------
-# 슈도 코드, 수도코드 -> 슈도코드로 target 지정
-#-----------------------------------------
-def is_pseudocode(query: str, threshold=0.6) -> str | bool:
-    target = "슈도코드"
-    # target_vec = get_embedding(target)
-    target_vec = get_embedding_cached("슈도코드")  # ✅ 캐시 사용
+    if label not in QUESTION_TYPES:   # 예상 밖의 응답이면 일반 검색으로 보낸다
+        print(f"⚠️ 알 수 없는 분류 결과: {label!r} -> other")
+        label = "other"
 
-    # 영어 표현을 한글식으로 치환
-    normalized_query = query.lower().replace("pseudo", "슈도").replace("code", "코드")
+    set_cached_question_type(question, label)
+    return label
 
-    candidates = normalized_query.split(" ")
-    print(f"$$${candidates}")
-    for i in range(len(candidates)):
-        for j in range(i + 1, min(len(candidates), i + 2)):
-            phrase = " ".join(candidates[i:j+1])
+#----------------------------------------------------------
+# 같은 질문에 항상 같은 분류가 나오도록 Redis에 캐싱하는 함수들
+#----------------------------------------------------------
+def question_type_key(question):
+    digest = hashlib.sha256(question.strip().encode("utf-8")).hexdigest()
+    return f"qtype:{digest}"
 
-            try:
-                # vec = get_embedding(phrase)
-                vec = get_embedding_cached(phrase)  # ✅ 캐시 사용
+def get_cached_question_type(question):
+    try:
+        label = r.get(question_type_key(question))
+    except Exception as e:
+        print(f"⚠️ 질문 분류 캐시 조회 실패: {e}")
+        return None
+    return label if label in QUESTION_TYPES else None
 
-                sim = cosine_similarity(vec, target_vec)
-                print(f"유사도({phrase} vs 슈도 코드): {sim:.3f}")
-                if sim >= threshold:
-                    print(target)
-                    return target
-            except Exception as e:
-                print(f"⚠️ 임베딩 오류: {e}")
-                continue
-
-    return False
-
-#---------------------------------------------------------------
-# 한 번 임베딩을 계산한 텍스트는 다시 API를 호출하지 않고 캐시에서 불러오는 함수
-#---------------------------------------------------------------
-cache = {}
-def get_embedding_cached(text):
-    if text in cache:
-        return cache[text]  # 👉 저장된 값 재사용
-    emb = get_embedding(text)
-    cache[text] = emb       # 👉 결과를 캐시에 저장
-    return emb
-
-#---------------------------------------------------
-# 어떤 단어가 슈도코드 단어와 유사한지 판별하는 임베딩 기반 함수
-#---------------------------------------------------
-def is_pseudocode_keyword(word: str, threshold=0.4) -> bool:
-    # 임베딩 유사도 기반으로 판별
-    target = "슈도코드"
-    word = word.lower().replace("pseudo", "슈도").replace("code", "코드")
-    print(f"word: {word}")
-    target_vec = get_embedding(target)
-    word_vec = get_embedding(word)
-
-    sim = cosine_similarity(word_vec, target_vec)
-    print(f"sim: {sim}")
-    return sim >= threshold
-
-#---------------------
-# 단일 텍스트 임베딩 함수
-#---------------------
-def get_embedding(text):
-    return _embed_text([text])[0]
-
-#------------------------------------
-# 두 임베딩 벡터 간의 코사인 유사도 계산 함수
-#------------------------------------
-def cosine_similarity(vec1, vec2):
-    return np.dot(vec1, vec2) / (norm(vec1) * norm(vec2))
+def set_cached_question_type(question, label):
+    try:
+        r.setex(question_type_key(question), QUESTION_TYPE_TTL, label)
+    except Exception as e:
+        print(f"⚠️ 질문 분류 캐시 저장 실패: {e}")
 
 #===================================================================================
 # RAG 관련 함수
@@ -406,73 +368,129 @@ def enhance_korean_fraction(expr: str) -> str:
 # 질문이 위치, 코드인지 등을 판단 -> 그에 맞는 검색 함수를 실행하도록 분기
 #===================================================================================
 def query_by_question_subject_location_pseudo(query, question_subject):
-    q_type = clean_phrase(query)
-
-    if question_subject in ("location", "location_or_code"):
-        return find_in_pages(q_type)
-    elif question_subject == "code" or is_pseudocode(query) == "슈도코드":
-        return find_pseudocode_sections(q_type)
+    # 두 경로 모두 형태소 분석기가 조사를 처리하므로 원문을 그대로 넘긴다
+    if question_subject == "location":
+        return find_in_pages(query)
+    elif question_subject == "code":
+        return find_pseudocode_sections(query)
     else:
         return None
-
-#--------------------
-# 조사를 제거하는 함수
-#--------------------
-def clean_phrase(phrase):
-    # "의", "가", "을", "를" 등의 조사를 모두 제거
-    return re.sub(r'(의|가 |을|를|은|는|이 |에|와|과|로|으로|,)', ' ', phrase)
 
 #------------------------------------------------------
 # 해당 용어가 등장하는 페이지 목록을 문자열로 만들어 반환하는 함수
 #------------------------------------------------------
-def find_in_pages(q_type):
-    keywords_list = extract_nouns(q_type)
-    n = len(keywords_list)
-    answer_lines = []
-    used_phrases = set()
-    shown_phrases = set()  # 이미 표시한 표기(대표 표기, 붙여쓰기/띄어쓰기 모두)
+def find_in_pages(query):
+    keywords = extract_nouns(query)
+    if not keywords:
+        return "해당 페이지를 찾지 못했습니다."
 
-    # 2개 이상 단어면 복합어 우선!
-    if n >= 2:
-        phrase = " ".join(keywords_list)
-        phrase_nospace = phrase.replace(" ", "")
-        # 대표 표기는 띄어쓰기 있는 쪽으로!
-        found = False
-        for cand, display_phrase in [(phrase, phrase), (phrase_nospace, phrase)]:
-            if display_phrase in shown_phrases:
+    phrase = " ".join(keywords)
+
+    # 1) 추출된 키워드 전체를 하나의 복합어로 보고 정확히 찾는다
+    #    ("변수명 표기 일관성" -> 그대로 한 덩어리)
+    lines = build_page_lines(phrase, [phrase])
+    if lines:
+        return "\n".join(lines)
+
+    # 2) 복합어가 없으면, 키워드가 "모두 함께" 등장하는 페이지를 찾는다
+    #    (책에 "변수명 표기의 일관성"처럼 조사가 끼어 있는 경우)
+    if len(keywords) >= 2:
+        lines = build_page_lines(phrase, keywords, together=True)
+        if lines:
+            return "\n".join(lines)
+
+    # 3) 그래도 없으면 가장 긴 연속 n-gram부터 탐욕적으로 나눠서 찾는다
+    return search_longest_ngrams(keywords)
+
+#--------------------------------------------------
+# 키워드로 각 권을 검색해 출력용 문장 리스트를 만드는 함수
+#--------------------------------------------------
+def build_page_lines(display_phrase, keywords, together=False):
+    lines = []
+    suffix = "에 함께 나옵니다" if together else "에 나옵니다"
+    for label, meta_pages in PAGE_VOLUME_LIST:
+        matched_pages = find_pages_with_keywords(keywords, meta_pages)
+        if matched_pages:
+            lines.append(
+                f'**{display_phrase}**은(는) **{label}** {", ".join(map(str, matched_pages))}쪽(페이지){suffix}.\n'
+            )
+    return lines
+
+#---------------------------------------------------------------
+# 긴 연속 n-gram부터 검색하고, 매칭된 구간은 다시 낱개로 쪼개지 않는 함수
+#---------------------------------------------------------------
+def search_longest_ngrams(keywords):
+    n = len(keywords)
+    covered = [False] * n   # 이미 더 긴 구간으로 답한 단어는 다시 찾지 않는다
+    lines = []
+
+    for size in range(n - 1, 0, -1):   # 전체(n개)는 find_in_pages에서 이미 시도했다
+        for i in range(n - size + 1):
+            if any(covered[i:i + size]):
                 continue
-            for label, meta_pages in PAGE_VOLUME_LIST:
-                matched_pages = find_pages_with_keywords([cand], meta_pages)
-                if matched_pages:
-                    answer_lines.append(
-                        f'**{display_phrase}**은(는) **{label}** {", ".join(map(str, matched_pages))}쪽(페이지)에 나옵니다.\n'
-                    )
-                    shown_phrases.add(display_phrase)
-                    found = True
-        if found:
-            return "\n".join(answer_lines)
+            phrase = " ".join(keywords[i:i + size])
+            hits = build_page_lines(phrase, [phrase])
+            if hits:
+                lines.extend(hits)
+                for j in range(i, i + size):
+                    covered[j] = True
 
-    # 복합어로 못 찾았을 때만 단일어로 각자 검색
-    for k in keywords_list:
-        if k in shown_phrases:
-            continue
-        for label, meta_pages in PAGE_VOLUME_LIST:
-            matched_pages = find_pages_with_keywords([k], meta_pages)
-            if matched_pages:
-                answer_lines.append(
-                    f'**{k}**은(는) **{label}** {", ".join(map(str, matched_pages))}쪽(페이지)에 나옵니다.\n'
-                )
-                shown_phrases.add(k)
-    return "\n".join(answer_lines) if answer_lines else "해당 페이지를 찾지 못했습니다."
+    return "\n".join(lines) if lines else "해당 페이지를 찾지 못했습니다."
 
-#-----------------------------------
-# 질문에서 한글 명사를 추출하는 전처리 함수
-#-----------------------------------
+#-----------------------------------------------------------------
+# 질문에서 명사를 추출하는 전처리 함수 (형태소 분석 기반)
+#  - 조사/어미/대명사/동사는 품사 태그로 걸러지므로 정규식으로 지울 필요가 없다
+#  - 원문에서 붙어 있는 명사/접사는 다시 이어 붙여
+#    복합어(변수명, 은닉층, 의사결정나무 …)를 원래 형태로 복원한다
+#-----------------------------------------------------------------
+NOUN_TAGS = {"NNG", "NNP", "SL", "SH"}          # 일반명사, 고유명사, 외국어, 한자
+AFFIX_TAGS = {"XPN", "XSN", "SN", "NNB"}        # 접두/접미사, 숫자, 의존명사
+                                                # (단독으로는 키워드가 되지 않고, 앞 명사에 붙을 때만 쓰인다)
+
+@st.cache_resource
+def get_kiwi():
+    """
+    형태소 분석기를 만들고, 가이드라인의 절 키워드를 사용자 사전으로 등록한다.
+    사전을 코드에 박아두지 않고 데이터에서 뽑아 쓰므로,
+    책이 바뀌면 사전도 같이 바뀐다. ("변수명 표기 일관성" 같은 복합어가 한 단어로 인식된다)
+    """
+    kiwi = Kiwi()
+    for _, meta_keywords in SECTION_VOLUME_LIST:
+        for meta_kw in meta_keywords:
+            for word in meta_kw.get("keywords") or []:
+                word = word.strip()
+                if len(word) >= 2:
+                    kiwi.add_user_word(word, "NNP")
+    return kiwi
+
 def extract_nouns(text):
-    # 기존: 모든 2글자 이상 한글 추출
-    words = re.findall(r'[가-힣]{2,}', text)
-    # 불용어 제거
-    return [w for w in words if w not in STOPWORDS]
+    words = []
+    buf = []            # 현재 이어 붙이는 중인 토큰들
+    has_noun = False    # buf 안에 진짜 명사가 하나라도 있는지
+
+    def flush():
+        nonlocal buf, has_noun
+        if buf and has_noun:
+            word = "".join(t.form for t in buf)
+            if len(word) >= 2 and word not in STOPWORDS:
+                words.append(word)
+        buf, has_noun = [], False
+
+    for tok in get_kiwi().tokenize(text):
+        if tok.tag not in NOUN_TAGS and tok.tag not in AFFIX_TAGS:
+            flush()
+            continue
+        # 원문에서 바로 이어져 있을 때만 한 단어로 합친다 ("변수"+"명" -> "변수명")
+        if buf and buf[-1].start + buf[-1].len == tok.start:
+            buf.append(tok)
+        else:
+            flush()
+            buf = [tok]
+        if tok.tag in NOUN_TAGS:
+            has_noun = True
+    flush()
+
+    return words
 
 #-----------------------------------------------
 # 주어진 키워드들이 포함된 페이지를 찾아내는 핵심 검색 함수
@@ -495,56 +513,69 @@ def find_pages_with_keywords(keywords, meta_pages):
 #---------------------------------------
 # 슈도코드가 포함된 절을 찾아주는 검색 전용 함수
 #---------------------------------------
-def find_pseudocode_sections(q_type):
-    keywords = extract_keywords(q_type)
-    print(f"keywords: {keywords}")
+def find_pseudocode_sections(query):
+    keywords = strip_pseudocode_words(extract_nouns(query))
+    if not keywords:
+        return "어떤 내용의 슈도코드를 찾는지 알려주세요."
 
-    concept_keywords = [k for k in keywords if not is_pseudocode_keyword(k)]
-    print(f"concept_keywords: {concept_keywords}")
+    # find_in_pages와 같은 방식: 긴 복합어부터 찾고,
+    # 한 번 매칭된 구간의 단어는 다시 낱개로 쪼개서 찾지 않는다.
+    n = len(keywords)
+    covered = [False] * n
+    matched = []
+    seen = set()
 
-    phrase = " ".join(concept_keywords)
-    print(f"phrase: {phrase}")
+    for size in range(n, 0, -1):
+        for i in range(n - size + 1):
+            if any(covered[i:i + size]):
+                continue
+            phrase = " ".join(keywords[i:i + size])
+            hits = match_sections_with_pseudocode(phrase)
+            if not hits:
+                continue
+            for label, section in hits:
+                key = (label, section.get("section"))
+                if key not in seen:     # 같은 절이 여러 번 나오지 않도록
+                    seen.add(key)
+                    matched.append((label, section))
+            for j in range(i, i + size):
+                covered[j] = True
 
-    matched_sections = []
-
-    for label, meta_keywords in SECTION_VOLUME_LIST:
-        for meta_kw in meta_keywords:
-            # 복합어(띄어쓰기/붙여쓰기) 모두 검사
-            candidates = [phrase]
-            if " " in phrase:
-                candidates.append(phrase.replace(" ", ""))
-            for cand in candidates:
-                if any(cand in item for item in meta_kw["keywords"]):
-                    if "슈도 코드" in meta_kw["text"] or "슈도코드" in meta_kw["text"]:
-                        matched_sections.append((label, meta_kw))
-
-    if matched_sections:
-        answers = [
-            f"**{label}** {section.get('section', '해당 절')} 절에 슈도코드가 있습니다."
-            for label, section in matched_sections
-        ]
-        return "\n\n".join(answers)
-    else:
+    if not matched:
         return "해당 절에는 슈도코드가 없습니다."
 
-#--------------------------------------------------------
-# 사용자 질문에서 gpt-4o-mini를 이용하여 핵심 키워드를 추출하는 함수
-#--------------------------------------------------------
-def extract_keywords(question):
-    prompt = (
-        "From the question below, extract all the main subject, keyword, or technical term the user is asking about. "
-        "Split all compound words and list every technical term separately, separated by commas. "
-        "Do not group multiple terms together. "
-        "Do not include any other words or explanation.\n\n"
-        f"Question: {question}"
+    return "\n\n".join(
+        f"**{label}** {section.get('section', '해당 절')} 절에 슈도코드가 있습니다."
+        for label, section in matched
     )
-    response = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0,
-        max_tokens=20,
-    )
-    return [kw.strip() for kw in response.choices[0].message.content.strip().split(',')]
+
+#--------------------------------------------------------
+# 주어진 복합어를 절 키워드에서 찾고, 그 절에 슈도코드가 있는지 확인
+#--------------------------------------------------------
+def match_sections_with_pseudocode(phrase):
+    phrase_nospace = phrase.replace(" ", "")
+    hits = []
+    for label, meta_keywords in SECTION_VOLUME_LIST:
+        for meta_kw in meta_keywords:
+            text = meta_kw["text"]
+            if "슈도코드" not in text and "슈도 코드" not in text:
+                continue
+            if any(phrase_nospace in item.replace(" ", "") for item in meta_kw["keywords"]):
+                hits.append((label, meta_kw))
+    return hits
+
+#--------------------------------------------------------------
+# "슈도코드" 자체는 질문의 유형이지 검색어가 아니므로 키워드에서 뺀다
+#--------------------------------------------------------------
+PSEUDOCODE_WORDS = {"슈도코드", "수도코드", "의사코드", "코드"}
+
+def strip_pseudocode_words(keywords):
+    kept = []
+    for k in keywords:
+        normalized = k.lower().replace(" ", "").replace("pseudo", "슈도").replace("code", "코드")
+        if normalized not in PSEUDOCODE_WORDS:
+            kept.append(k)
+    return kept
 
 #===================================================================================
 # 사용자 식별용(fp) 관련 함수
